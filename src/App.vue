@@ -5,6 +5,7 @@ import JsonViewer from 'vue-json-viewer'
 import { oldMarkdown as defaultOldMarkdown, newMarkdown as defaultNewMarkdown } from './data/mockData'
 import { parseMarkdown } from './utils/markdownParser'
 
+
 const oldMarkdown = ref(defaultOldMarkdown)
 const newMarkdown = ref(defaultNewMarkdown)
 
