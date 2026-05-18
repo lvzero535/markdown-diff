@@ -1,339 +1,207 @@
-<script lang="ts">
-import { h, type VNode } from 'vue'
-import { diff_match_patch } from 'diff-match-patch'
-import { parseMarkdown } from '../utils/markdownParser'
+<script setup lang="ts">
+import { computed, ref, watch } from 'vue'
+import { parseMarkdown, buildMergedMdast, renderMdastToHtml, applyHunkResolution, mdastToMarkdown } from '../utils/markdownDiff'
+import type { DiffHunk } from '../utils/markdownDiff'
 
 /**
- * MarkdownDiff 组件
- * 
- * 用于对比两个 Markdown 文档差异的 Vue 组件
- * 支持行内文本级差异高亮（删除/插入）
- * 支持块级差异标记（新增块/删除块）
- * 
- * @component
- * @example
- * <MarkdownDiff :old-markdown="oldText" :new-markdown="newText" />
+ * MarkdownDiff 组件属性。
+ *
+ * 该组件接收旧 Markdown 和新 Markdown，并渲染一个可交互的差异视图，
+ * 用户可以在 diff 面板中直接接受或拒绝单个变更。
  */
-export default {
-  props: {
-    /**
-     * 旧版本的 Markdown 文本
-     * @type {string}
-     * @required
-     */
-    oldMarkdown: {
-      type: String,
-      required: true
-    },
-    /**
-     * 新版本的 Markdown 文本
-     * @type {string}
-     * @required
-     */
-    newMarkdown: {
-      type: String,
-      required: true
-    }
+const props = defineProps<{
+  /** 旧版本 Markdown 原文。 */
+  oldMarkdown: string
+  /** 新版本 Markdown 原文。 */
+  newMarkdown: string
+}>()
+
+/**
+ * 组件事件定义。
+ *
+ * 当用户接受/拒绝某个 diff hunk 时，组件会向父组件回传更新后的 Markdown 文本，
+ * 以便父组件同步刷新编辑器中的内容。
+ */
+const emit = defineEmits<{
+  /** 更新新 Markdown 内容。 */
+  'update:newMarkdown': [value: string]
+}>()
+
+const hunksRef = ref<Map<string, DiffHunk>>(new Map())
+
+/**
+ * 由旧/新 Markdown 计算得到的合并结果。
+ *
+ * 其中 `mdast` 用于最终渲染，`hunks` 用于按钮交互时定位差异块。
+ */
+const merged = computed(() => {
+  const oldAst = parseMarkdown(props.oldMarkdown)
+  const newAst = parseMarkdown(props.newMarkdown)
+  return buildMergedMdast(oldAst, newAst)
+})
+
+/**
+ * 同步最新的 hunks 索引，确保按钮点击时拿到的是当前 diff 状态。
+ */
+watch(
+  merged,
+  (m) => {
+    hunksRef.value = m.hunks
   },
-  
-  render() {
-    // 初始化 diff-match-patch 实例，用于计算文本差异
-    const dmp = new diff_match_patch()
-    
-    // 差异类型常量定义
-    const DIFF_DELETE = -1  // 删除内容
-    const DIFF_INSERT = 1   // 插入内容
-    const DIFF_EQUAL = 0    // 相同内容
-    
-    // 解析 Markdown 为 AST（抽象语法树）
-    const oldAst = parseMarkdown(this.oldMarkdown)
-    const newAst = parseMarkdown(this.newMarkdown)
-    
-    /**
-     * 递归收集 AST 节点中的所有文本节点
-     * @param {any} node - AST 节点
-     * @param {string} [path=''] - 当前节点路径（用于定位）
-     * @returns {Map<string, string>} - 路径到文本值的映射
-     */
-    function collectTextNodes(node: any, path: string = ''): Map<string, string> {
-      const texts = new Map<string, string>()
-      
-      /**
-       * 递归遍历节点树
-       * @param {any} n - 当前节点
-       * @param {string} currentPath - 当前路径
-       */
-      function traverse(n: any, currentPath: string) {
-        if (n.type === 'text') {
-          texts.set(currentPath, n.value)
-        } else if ('children' in n && Array.isArray(n.children)) {
-          n.children.forEach((child: any, index: number) => {
-            const childPath = currentPath ? `${currentPath}.children.${index}` : `${index}`
-            traverse(child, childPath)
-          })
-        }
-      }
-      
-      traverse(node, path)
-      return texts
-    }
-    
-    // 收集新旧 AST 中的所有文本节点
-    const oldTexts = collectTextNodes(oldAst)
-    const newTexts = collectTextNodes(newAst)
-    
-    /**
-     * 根据路径获取文本内容
-     * @param {string} path - 文本节点路径
-     * @param {Map<string, string>} texts - 文本映射表
-     * @returns {string} - 文本内容，不存在则返回空字符串
-     */
-    function getTextByPath(path: string, texts: Map<string, string>): string {
-      return texts.get(path) || ''
-    }
-    
-    /**
-     * 将文本分词为单词、空格和特殊字符
-     * @param {string} text - 输入文本
-     * @returns {string[]} - 分词结果数组
-     */
-    function tokenizeText(text: string): string[] {
-      const tokens: string[] = []
-      const regex = /(\b\w+\b|\s+|[^\w\s])/g
-      let match
-      while ((match = regex.exec(text)) !== null) {
-        tokens.push(match[0])
-      }
-      return tokens
-    }
-    
-    /**
-     * 渲染带有差异标记的文本
-     * @param {string} oldText - 旧文本
-     * @param {string} newText - 新文本
-     * @returns {VNode[]} - 渲染后的 VNode 数组
-     */
-    function renderDiffText(oldText: string, newText: string): VNode[] {
-      const oldTokens = tokenizeText(oldText)
-      const newTokens = tokenizeText(newText)
-      
-      // 使用 diff-match-patch 计算差异，用 \0 分隔 token
-      const diffs = dmp.diff_main(oldTokens.join('\0'), newTokens.join('\0'))
-      
-      return diffs.flatMap((diff: [number, string], index: number) => {
-        const [type, text] = diff
-        
-        if (!text) return []
-        
-        const tokens = text.split('\0').filter(t => t)
-        
-        return tokens.map((token, tokenIndex) => {
-          switch (type) {
-            case DIFF_DELETE:
-              return h('del', { key: `${index}-${tokenIndex}`, class: 'diff-delete' }, token)
-            case DIFF_INSERT:
-              return h('ins', { key: `${index}-${tokenIndex}`, class: 'diff-insert' }, token)
-            case DIFF_EQUAL:
-            default:
-              return h('span', { key: `${index}-${tokenIndex}` }, token)
-          }
-        })
-      })
-    }
-    
-    /**
-     * 根据 AST 节点类型渲染对应的 HTML
-     * @param {any} node - AST 节点
-     * @param {string} [path=''] - 节点路径
-     * @returns {VNode | VNode[]} - 渲染后的 VNode
-     */
-    function renderNode(node: any, path: string = ''): VNode | VNode[] {
-      const oldText = getTextByPath(path, oldTexts)
-      const newText = getTextByPath(path, newTexts)
-      
-      switch (node.type) {
-        case 'root':
-          return node.children?.flatMap((child: any, index: number) => {
-            const result = renderNode(child, `${index}`)
-            return Array.isArray(result) ? result : [result]
-          }) || []
-        
-        case 'heading': {
-          const children = renderChildren(node.children, `${path}.children`)
-          return h(`h${node.depth}`, { class: 'markdown-heading' }, children)
-        }
-        
-        case 'paragraph': {
-          const children = renderChildren(node.children, `${path}.children`)
-          return h('p', { class: 'markdown-paragraph' }, children)
-        }
-        
-        case 'text':
-          return renderDiffText(oldText, newText)
-        
-        case 'strong': {
-          const children = renderChildren(node.children, `${path}.children`)
-          return h('strong', { class: 'markdown-strong' }, children)
-        }
-        
-        case 'emphasis': {
-          const children = renderChildren(node.children, `${path}.children`)
-          return h('em', { class: 'markdown-emphasis' }, children)
-        }
-        
-        case 'link': {
-          const children = renderChildren(node.children, `${path}.children`)
-          return h('a', {
-            class: 'markdown-link',
-            href: node.url,
-            target: '_blank',
-            rel: 'noopener noreferrer'
-          }, children)
-        }
-        
-        case 'code':
-          return h('pre', { class: 'markdown-code-block' }, [h('code', node.value)])
-        
-        case 'inlineCode':
-          return h('code', { class: 'markdown-inline-code' }, node.value)
-        
-        case 'blockquote': {
-          const children = renderChildren(node.children, `${path}.children`)
-          return h('blockquote', { class: 'markdown-blockquote' }, children)
-        }
-        
-        case 'list': {
-          const children = node.children?.flatMap((child: any, index: number) => {
-            const result = renderNode(child, `${path}.children.${index}`)
-            return Array.isArray(result) ? result : [result]
-          }) || []
-          const tag = node.ordered ? 'ol' : 'ul'
-          return h(tag, { class: 'markdown-list' }, children)
-        }
-        
-        case 'listItem': {
-          const children = renderChildren(node.children, `${path}.children`)
-          return h('li', { class: 'markdown-list-item' }, children)
-        }
-        
-        case 'table': {
-          const children = node.children?.flatMap((child: any, index: number) => {
-            const result = renderNode(child, `${path}.children.${index}`)
-            return Array.isArray(result) ? result : [result]
-          }) || []
-          const headRow = children[0] ? [children[0]] : []
-          const bodyRows = children.slice(1)
-          return h('table', { class: 'markdown-table' }, [
-            h('thead', { class: 'markdown-table-head' }, headRow),
-            h('tbody', { class: 'markdown-table-body' }, bodyRows)
-          ])
-        }
-        
-        case 'tableRow': {
-          const children = node.children?.flatMap((child: any, index: number) => {
-            const result = renderNode(child, `${path}.children.${index}`)
-            return Array.isArray(result) ? result : [result]
-          }) || []
-          return h('tr', { class: 'markdown-table-row' }, children)
-        }
-        
-        case 'tableCell': {
-          const children = renderChildren(node.children, `${path}.children`)
-          const cellType = node.header ? 'th' : 'td'
-          return h(cellType, { class: 'markdown-table-cell' }, children)
-        }
-        
-        case 'thematicBreak':
-          return h('hr', { class: 'markdown-hr' })
-        
-        case 'html':
-          return h('div', { class: 'markdown-html', innerHTML: node.value })
-        
-        case 'break':
-          return h('br', { class: 'markdown-br' })
-        
-        default:
-          return h('span', {}, `[${node.type}]`)
-      }
-    }
-    
-    /**
-     * 渲染子节点数组
-     * @param {any[]} [children=[]] - 子节点数组
-     * @param {string} basePath - 基础路径
-     * @returns {VNode[]} - 渲染后的 VNode 数组
-     */
-    function renderChildren(children: any[] = [], basePath: string): VNode[] {
-      return children.flatMap((child: any, index: number) => {
-        const result = renderNode(child, `${basePath}.${index}`)
-        return Array.isArray(result) ? result : [result]
-      })
-    }
-    
-    /**
-     * 合并新旧 AST 节点，标记差异类型
-     * @param {any} oldAst - 旧 AST
-     * @param {any} newAst - 新 AST
-     * @returns {any[]} - 合并后的节点数组，包含 diffType 标记
-     */
-    function mergeAstNodes(oldAst: any, newAst: any): any[] {
-      const merged: any[] = []
-      const maxLength = Math.max(oldAst.children?.length || 0, newAst.children?.length || 0)
-      
-      for (let i = 0; i < maxLength; i++) {
-        const oldNode = oldAst.children?.[i]
-        const newNode = newAst.children?.[i]
-        
-        if (!oldNode && newNode) {
-          merged.push({ ...newNode, diffType: 'add' })
-        } else if (oldNode && !newNode) {
-          merged.push({ ...oldNode, diffType: 'remove' })
-        } else if (oldNode && newNode && oldNode.type === newNode.type) {
-          merged.push({ ...newNode, diffType: 'update' })
-        } else if (newNode) {
-          merged.push(newNode)
-        }
-      }
-      
-      return merged
-    }
-    
-    // 合并 AST 节点并标记差异类型
-    const mergedNodes = mergeAstNodes(oldAst, newAst)
-    
-    // 渲染最终的差异结果
-    const renderedDiff: VNode[] = mergedNodes.flatMap((node: any, index: number) => {
-      const result = renderNode(node, `${index}`)
-      const resultArray = Array.isArray(result) ? result : [result]
-      
-      if (node.diffType === 'add') {
-        return [h('div', { class: 'diff-block-add' }, resultArray)]
-      } else if (node.diffType === 'remove') {
-        return [h('div', { class: 'diff-block-remove' }, resultArray)]
-      }
-      return resultArray
-    })
-    
-    // 返回最终渲染结果
-    return h('div', { class: 'markdown-diff-container' }, [
-      h('div', { class: 'markdown-diff-content' }, renderedDiff)
-    ])
-  }
+  { immediate: true }
+)
+
+/**
+ * 将 merged AST 转换为 HTML 字符串，用于 `v-html` 渲染。
+ */
+const html = computed(() => renderMdastToHtml(merged.value.mdast as Parameters<typeof renderMdastToHtml>[0]))
+
+/**
+ * 处理 diff 面板中的点击事件。
+ *
+ * 只响应带有 `data-action` 的按钮点击，避免干扰正文中的普通交互。
+ * 当用户点击“接受/拒绝”时，会根据对应 hunk 生成新的 Markdown 并回传给父组件。
+ *
+ * @param e - 鼠标点击事件。
+ */
+function onContentClick(e: MouseEvent) {
+  const target = e.target as HTMLElement
+  const btn = target.closest('[data-action]') as HTMLElement | null
+  if (!btn) return
+
+  e.preventDefault()
+  e.stopPropagation()
+
+  const hunkEl = btn.closest('[data-diff-id]') as HTMLElement | null
+  const id = hunkEl?.getAttribute('data-diff-id')
+  const action = btn.getAttribute('data-action') as 'accept' | 'reject' | null
+  if (!id || !action) return
+
+  const hunk = hunksRef.value.get(id)
+  if (!hunk) return
+
+  const newAst = parseMarkdown(props.newMarkdown)
+  const patched = applyHunkResolution(newAst, hunk, action)
+  emit('update:newMarkdown', mdastToMarkdown(patched))
 }
 </script>
 
+<template>
+  <!-- diff 容器：承载最终渲染后的 Markdown HTML -->
+  <div class="markdown-diff-container">
+    <!-- 使用 v-html 输出带有 diff 标记的 HTML，并在容器上统一接管点击事件 -->
+    <div
+      class="markdown-diff-content"
+      v-html="html"
+      @click="onContentClick"
+    />
+  </div>
+</template>
+
 <style>
+/* 整体 diff 面板容器 */
 .markdown-diff-container {
   padding: 20px;
   background: #ffffff;
   border-radius: 8px;
 }
 
+/* Markdown 正文基础排版 */
 .markdown-diff-content {
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
   font-size: 16px;
   line-height: 1.6;
   color: #333;
+}
+
+.markdown-diff-content :deep(h1),
+.markdown-diff-content :deep(h2),
+.markdown-diff-content :deep(h3) {
+  font-weight: 600;
+  margin-top: 1.5em;
+  margin-bottom: 0.5em;
+}
+
+.markdown-diff-content :deep(h1) {
+  font-size: 2em;
+  margin-top: 0;
+}
+
+.markdown-diff-content :deep(h2) {
+  font-size: 1.5em;
+}
+
+.markdown-diff-content :deep(p) {
+  margin: 1em 0;
+}
+
+.markdown-diff-content :deep(table) {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 1.25em 0;
+  font-size: 14px;
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  overflow: hidden;
+  table-layout: fixed;
+}
+
+.markdown-diff-content :deep(thead) {
+  background: linear-gradient(180deg, #f8fafc 0%, #eef2f7 100%);
+}
+
+.markdown-diff-content :deep(th),
+.markdown-diff-content :deep(td) {
+  padding: 12px 14px;
+  border-right: 1px solid #e5e7eb;
+  border-bottom: 1px solid #e5e7eb;
+  text-align: left;
+  vertical-align: middle;
+  word-break: break-word;
+}
+
+.markdown-diff-content :deep(th:last-child),
+.markdown-diff-content :deep(td:last-child) {
+  border-right: none;
+}
+
+.markdown-diff-content :deep(thead th) {
+  font-weight: 700;
+  color: #111827;
+  font-size: 15px;
+}
+
+.markdown-diff-content :deep(tbody tr:nth-child(even)) {
+  background: #fafafa;
+}
+
+.markdown-diff-content :deep(tbody tr:hover) {
+  background: #f3f8ff;
+}
+
+.markdown-diff-content :deep(tbody td) {
+  color: #1f2937;
+}
+
+.markdown-diff-content :deep(tbody tr.diff-hunk--delete),
+.markdown-diff-content :deep(tbody tr.diff-hunk--modified) {
+  background: rgba(239, 68, 68, 0.06);
+}
+
+.markdown-diff-content :deep(pre) {
+  background-color: #f3f4f6;
+  padding: 1em;
+  border-radius: 4px;
+  overflow-x: auto;
+}
+
+.markdown-diff-content :deep(code) {
+  background-color: #f3f4f6;
+  padding: 0.2em 0.4em;
+  border-radius: 4px;
+  font-family: 'Fira Code', 'Monaco', 'Consolas', monospace;
+  font-size: 0.9em;
 }
 
 .diff-delete {
@@ -352,125 +220,66 @@ export default {
   border-radius: 2px;
 }
 
-.markdown-heading {
-  font-weight: 600;
-  margin-top: 1.5em;
-  margin-bottom: 0.5em;
-  padding-bottom: 0.3em;
-  border-bottom: 1px solid #e5e7eb;
-}
-
-h1.markdown-heading {
-  font-size: 2em;
-  margin-top: 0;
-}
-
-h2.markdown-heading {
-  font-size: 1.5em;
-}
-
-h3.markdown-heading {
-  font-size: 1.25em;
-}
-
-.markdown-paragraph {
-  margin: 1em 0;
-}
-
-.markdown-strong {
-  font-weight: 600;
-}
-
-.markdown-emphasis {
-  font-style: italic;
-}
-
-.markdown-link {
-  color: #3b82f6;
-  text-decoration: none;
-}
-
-.markdown-link:hover {
-  text-decoration: underline;
-}
-
-.markdown-code-block {
-  background-color: #f3f4f6;
-  padding: 1em;
+.diff-hunk {
+  position: relative;
+  margin: 8px 0;
   border-radius: 4px;
-  font-family: 'Fira Code', 'Monaco', 'Consolas', monospace;
-  font-size: 0.9em;
-  overflow-x: auto;
 }
 
-.markdown-inline-code {
-  background-color: #f3f4f6;
-  padding: 0.2em 0.4em;
-  border-radius: 4px;
-  font-family: 'Fira Code', 'Monaco', 'Consolas', monospace;
-  font-size: 0.9em;
-}
-
-.markdown-blockquote {
-  border-left: 4px solid #e5e7eb;
-  padding-left: 1em;
-  margin: 1em 0;
-  color: #6b7280;
-}
-
-.markdown-list {
-  padding-left: 2em;
-  margin: 1em 0;
-}
-
-.markdown-list-item {
-  margin: 0.25em 0;
-}
-
-.markdown-table {
-  width: 100%;
-  border-collapse: collapse;
-  margin: 1em 0;
-  font-size: 14px;
-}
-
-.markdown-table-head {
-  background-color: #f3f4f6;
-}
-
-.markdown-table-body {
-  background-color: #ffffff;
-}
-
-.markdown-table-cell {
-  padding: 8px 12px;
-  border: 1px solid #e5e7eb;
-  text-align: left;
-}
-
-.markdown-table-row:nth-child(even) {
-  background-color: #f9fafb;
-}
-
-.markdown-hr {
-  border: none;
-  border-top: 1px solid #e5e7eb;
-  margin: 2em 0;
-}
-
-.diff-block-add {
+.diff-hunk--insert {
   background-color: rgba(16, 185, 129, 0.1);
   border-left: 3px solid #10b981;
-  padding: 12px;
-  margin: 8px 0;
-  border-radius: 0 4px 4px 0;
+  padding: 12px 12px 12px 16px;
 }
 
-.diff-block-remove {
+.diff-hunk--delete {
   background-color: rgba(239, 68, 68, 0.1);
   border-left: 3px solid #ef4444;
-  padding: 12px;
-  margin: 8px 0;
-  border-radius: 0 4px 4px 0;
+  padding: 12px 12px 12px 16px;
+}
+
+.diff-hunk--modified {
+  background-color: rgba(59, 130, 246, 0.06);
+  border-left: 3px solid #3b82f6;
+  padding: 12px 12px 12px 16px;
+}
+
+.diff-hunk-toolbar {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  display: flex;
+  gap: 6px;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+  z-index: 1;
+}
+
+.diff-hunk:hover .diff-hunk-toolbar {
+  opacity: 1;
+}
+
+.diff-btn {
+  padding: 4px 10px;
+  font-size: 12px;
+  border-radius: 4px;
+  border: 1px solid #d1d5db;
+  background: #fff;
+  cursor: pointer;
+  line-height: 1.4;
+}
+
+.diff-btn:hover {
+  background: #f9fafb;
+}
+
+.diff-btn-accept {
+  color: #059669;
+  border-color: #6ee7b7;
+}
+
+.diff-btn-reject {
+  color: #dc2626;
+  border-color: #fca5a5;
 }
 </style>

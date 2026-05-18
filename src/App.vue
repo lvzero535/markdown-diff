@@ -3,14 +3,14 @@ import { ref, computed } from 'vue'
 import MarkdownDiff from './components/MarkdownDiff.vue'
 import JsonViewer from 'vue-json-viewer'
 import { oldMarkdown as defaultOldMarkdown, newMarkdown as defaultNewMarkdown } from './data/mockData'
-import { parseMarkdown } from './utils/markdownParser'
-
+import { parseMarkdown, buildMergedMdast } from './utils/markdownDiff'
 
 const oldMarkdown = ref(defaultOldMarkdown)
 const newMarkdown = ref(defaultNewMarkdown)
 
 const oldAst = computed(() => parseMarkdown(oldMarkdown.value))
 const newAst = computed(() => parseMarkdown(newMarkdown.value))
+const mergedMdast = computed(() => buildMergedMdast(oldAst.value, newAst.value).mdast)
 </script>
 
 <template>
@@ -58,7 +58,10 @@ const newAst = computed(() => parseMarkdown(newMarkdown.value))
             <span class="label">Rendered Diff Result</span>
           </div>
           <!-- MarkdownDiff 组件：核心差异对比展示，支持行内文本级差异高亮 -->
-          <MarkdownDiff :old-markdown="oldMarkdown" :new-markdown="newMarkdown" />
+          <MarkdownDiff
+            :old-markdown="oldMarkdown"
+            v-model:new-markdown="newMarkdown"
+          />
         </div>
       </div>
 
@@ -81,6 +84,16 @@ const newAst = computed(() => parseMarkdown(newMarkdown.value))
           <JsonViewer :value="newAst" :expand-depth="2" class="json-viewer" />
         </div>
       </div>
+
+      <div class="merged-ast-section">
+        <div class="result-card ast-card merged-ast-card">
+          <div class="result-header">
+            <span class="label">Merged AST</span>
+          </div>
+          <JsonViewer :value="mergedMdast" :expand-depth="2" class="json-viewer" />
+        </div>
+      </div>
+
     </main>
   </div>
 </template>
@@ -161,6 +174,15 @@ const newAst = computed(() => parseMarkdown(newMarkdown.value))
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 20px;
+  margin-bottom: 20px;
+}
+
+.merged-ast-section {
+  margin-bottom: 20px;
+}
+
+.merged-ast-card {
+  max-height: 600px;
 }
 
 .result-card {

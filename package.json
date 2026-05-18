@@ -6,23 +6,45 @@
   "scripts": {
     "dev": "vite",
     "build": "vue-tsc -b && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "lint": "eslint . --ext .ts,.tsx,.js,.jsx,.vue",
+    "lint:fix": "eslint . --ext .ts,.tsx,.js,.jsx,.vue --fix",
+    "format": "prettier . --write"
   },
   "dependencies": {
+    "diff": "^9.0.0",
     "diff-match-patch": "^1.0.5",
-    "marked": "^18.0.3",
-    "remark": "^15.0.1",
+    "mdast-util-gfm": "^3.1.0",
+    "mdast-util-to-markdown": "^2.1.2",
+    "rehype-raw": "^7.0.0",
+    "rehype-stringify": "^10.0.1",
     "remark-gfm": "^4.0.1",
+    "remark-parse": "^11.0.0",
+    "remark-rehype": "^11.1.2",
+    "unified": "^11.0.5",
+    "unist-util-visit": "^5.1.0",
     "vue": "^3.5.13",
     "vue-json-viewer": "^3.0.4"
   },
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
     "@types/diff-match-patch": "^1.0.36",
     "@types/node": "^25.7.0",
+    "@typescript-eslint/eslint-plugin": "^7.18.0",
+    "@typescript-eslint/parser": "^7.18.0",
     "@vitejs/plugin-vue": "^5.2.3",
     "@vue/tsconfig": "^0.7.0",
+    "eslint": "^8.57.1",
+    "eslint-config-airbnb-base": "^15.0.0",
+    "eslint-config-airbnb-typescript": "^18.0.0",
+    "eslint-config-prettier": "^10.1.8",
+    "eslint-plugin-import": "^2.32.0",
+    "eslint-plugin-prettier": "^5.5.5",
+    "eslint-plugin-vue": "^10.9.1",
+    "prettier": "^3.8.3",
     "typescript": "~5.8.3",
     "vite": "^6.3.5",
+    "vue-eslint-parser": "^10.4.0",
     "vue-tsc": "^2.2.8"
   }
 }
