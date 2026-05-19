@@ -1,0 +1,14 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+<div class="diff-hunk diff-hunk--modified" data-diff-id="0"><div class="diff-hunk-toolbar" role="toolbar"><button type="button" class="diff-btn diff-btn-accept" data-action="accept">接受</button><button type="button" class="diff-btn diff-btn-reject" data-action="reject">拒绝</button></div><table data-diff-id="0" data-diff-type="modified"><thead><tr><th>Name</th><th><del class="diff-delete">Score</del><ins class="diff-insert">Grade</ins></th></tr></thead><tbody><tr><td>Alice</td><td data-diff-id="" data-diff-type="delete" class="diff-hunk--delete">85</td></tr></tbody></table></div>

@@ -4,6 +4,9 @@ import remarkGfm from 'remark-gfm'
 import remarkRehype from 'remark-rehype'
 import rehypeRaw from 'rehype-raw'
 import rehypeStringify from 'rehype-stringify'
+import rehypeHighlight from 'rehype-highlight'
+import { createLowlight, common as lowlightCommon } from 'lowlight'
+import { toHtml } from 'hast-util-to-html'
 import DiffMatchPatch from 'diff-match-patch'
 import { diffWordsWithSpace } from 'diff'
 import { toMarkdown } from 'mdast-util-to-markdown'
@@ -30,6 +33,10 @@ export type DiffHunk = {
   diffType: 'insert' | 'delete' | 'modified'
   index: number
   path: number[]
+  /** 该 hunk 在旧 AST 中的位置（用于 accept 操作时修改 oldAst） */
+  oldIndex: number
+  /** 该 hunk 在旧 AST 中的路径（用于 accept 操作时修改 oldAst） */
+  oldPath: number[]
   oldNode?: MdastNode
   newNode?: MdastNode
 }
@@ -40,10 +47,24 @@ export type MergedResult = {
 }
 
 const dmp = new DiffMatchPatch()
+const lowlight = createLowlight(lowlightCommon)
+
+/** 使用 lowlight 对文本进行语法高亮，返回 HTML 字符串 */
+function highlightCodeText(text: string, lang: string): string {
+  if (!lang) return escapeHtml(text)
+  try {
+    const tree = lowlight.highlight(lang, text)
+    return toHtml(tree)
+  } catch {
+    // 语言未注册或不支持，回退为纯文本
+    return escapeHtml(text)
+  }
+}
 
 const rehypeProcessor = unified()
   .use(remarkRehype, { allowDangerousHtml: true })
   .use(rehypeRaw)
+  .use(rehypeHighlight, { detect: true, subset: true } as any)
   .use(rehypeDiffAnnotations)
   .use(rehypeStringify)
 
@@ -106,7 +127,11 @@ function getDiffModeForNode(oldNode: MdastNode, newNode: MdastNode): DiffMode {
  * @param config - diff 配置（可选），可设置 similarityThreshold 等。
  * @returns 合并后的 AST 以及对应的 diff hunks。
  */
-export function buildMergedMdast(oldAst: Root, newAst: Root, config?: Partial<DiffConfig>): MergedResult {
+export function buildMergedMdast(
+  oldAst: Root,
+  newAst: Root,
+  config?: Partial<DiffConfig>
+): MergedResult {
   const mergedConfig: DiffConfig = { ...DEFAULT_DIFF_CONFIG, ...config }
   const oldChildren = addKeyToNodes((oldAst.children ?? []) as MdastNode[])
   const newChildren = addKeyToNodes((newAst.children ?? []) as MdastNode[])
@@ -123,6 +148,7 @@ function buildMergedFromDiff(diffResult: DiffNode<MdastNode>[], config?: DiffCon
   const hunks = new Map<string, DiffHunk>()
   const children: MdastNode[] = []
   let newAstIndex = 0
+  let oldAstIndex = 0
 
   diffResult.forEach((diffNode, index) => {
     const id = String(index)
@@ -130,7 +156,15 @@ function buildMergedFromDiff(diffResult: DiffNode<MdastNode>[], config?: DiffCon
 
     if (diffType === 'insert') {
       const clean = stripMeta(diffNode)
-      hunks.set(id, { id, diffType: 'insert', newNode: clean, index: newAstIndex, path: [newAstIndex] })
+      hunks.set(id, {
+        id,
+        diffType: 'insert',
+        newNode: clean,
+        index: newAstIndex,
+        path: [newAstIndex],
+        oldIndex: oldAstIndex,
+        oldPath: [oldAstIndex],
+      })
       children.push(annotateNode(clean, id, 'insert'))
       newAstIndex++
       return
@@ -138,8 +172,17 @@ function buildMergedFromDiff(diffResult: DiffNode<MdastNode>[], config?: DiffCon
 
     if (diffType === 'delete') {
       const clean = stripMeta(diffNode)
-      hunks.set(id, { id, diffType: 'delete', oldNode: clean, index: newAstIndex, path: [newAstIndex] })
+      hunks.set(id, {
+        id,
+        diffType: 'delete',
+        oldNode: clean,
+        index: newAstIndex,
+        path: [newAstIndex],
+        oldIndex: oldAstIndex,
+        oldPath: [oldAstIndex],
+      })
       children.push(annotateNode(clean, id, 'delete'))
+      oldAstIndex++
       return
     }
 
@@ -155,12 +198,15 @@ function buildMergedFromDiff(diffResult: DiffNode<MdastNode>[], config?: DiffCon
           newNode: stripMeta(newNode),
           index: newAstIndex,
           path: [newAstIndex],
+          oldIndex: oldAstIndex,
+          oldPath: [oldAstIndex],
         })
         children.push(annotateNode(node, id, 'modified'))
       } else {
         children.push(annotateNode(node, id, 'unchanged'))
       }
       newAstIndex++
+      oldAstIndex++
     }
   })
 
@@ -226,6 +272,46 @@ export function applyHunkResolution(
 }
 
 /**
+ * 根据用户对某个 diff hunk 的接受操作，修改旧版本 AST，
+ * 使旧版本的内容与该 hunk 的新版本内容一致，从而消除该 diff。
+ *
+ * @param oldAst - 旧版本 Markdown AST。
+ * @param hunk - 需要处理的差异块。
+ * @returns 处理后的旧版本 AST。
+ */
+export function applyHunkAcceptOnOldAst(
+  oldAst: Root,
+  hunk: DiffHunk
+): Root {
+  const result = cloneNode(oldAst)
+  const children = [...(result.children ?? [])]
+  const targetIndex = findNodeByPath(children, hunk.oldPath) ?? hunk.oldIndex
+
+  switch (hunk.diffType) {
+    case 'insert':
+      // 将新增节点插入到旧 AST 的对应位置
+      if (hunk.newNode && targetIndex != null) {
+        children.splice(targetIndex, 0, cloneNode(hunk.newNode) as unknown as RootContent)
+      }
+      break
+    case 'delete':
+      // 从旧 AST 中移除被删除的节点
+      if (targetIndex != null) {
+        children.splice(targetIndex, 1)
+      }
+      break
+    case 'modified':
+      // 用新版本节点替换旧版本节点
+      if (targetIndex != null && hunk.newNode) {
+        children[targetIndex] = cloneNode(hunk.newNode) as unknown as RootContent
+      }
+      break
+  }
+  result.children = children
+  return result
+}
+
+/**
  * 深拷贝一个节点对象，避免后续修改污染原始 AST。
  *
  * @param node - 需要拷贝的任意节点。
@@ -249,6 +335,9 @@ function isValueBasedNode(node: MdastNode): boolean {
  * 例如 **continued** → continued 会生成：
  *   del("continued") + ins("continued")
  *
+ * 例如 highlight → **highlight** 会生成：
+ *   del("highlight") + ins(<strong>highlight</strong>)
+ *
  * @param oldChildren - 旧子节点数组。
  * @param newChildren - 新子节点数组。
  * @returns 合并后的子节点数组和是否发生变化。
@@ -257,34 +346,49 @@ function generateInlineStructureDiff(
   oldChildren: MdastNode[],
   newChildren: MdastNode[]
 ): { children: MdastNode[]; changed: boolean } {
-  const INLINE_TYPES = new Set(['strong', 'em', 'a', 'code', 'inlineCode', 'delete', 'image'])
+  const INLINE_TYPES = new Set(['strong', 'emphasis', 'link', 'code', 'inlineCode', 'delete', 'image'])
   const result: MdastNode[] = []
   let changed = false
 
-  // 构建新子节点的文本游标，用于对齐
-  // 将新子节点展开为 (type, text) 的扁平序列
-  const newSegments: Array<{ type: string; text: string }> = []
-  for (const child of newChildren) {
-    if (INLINE_TYPES.has(child.type)) {
-      newSegments.push({ type: child.type, text: extractTextFromNode(child) })
-    } else if (child.type === 'text') {
-      newSegments.push({ type: 'text', text: String(child.value ?? '') })
+  const oldHasInline = oldChildren.some((c) => INLINE_TYPES.has(c.type))
+  const newHasInline = newChildren.some((c) => INLINE_TYPES.has(c.type))
+
+  if (!oldHasInline && newHasInline) {
+    // 旧侧全是纯文本，新侧有 inline 元素
+    // 策略：以新侧子节点为框架，在旧侧完整文本中按游标对齐
+    // 遇到新 inline 元素时，从旧文本对应位置取出等长文本，标记 del+ins
+    const oldFullText = oldChildren.map((c) => String(c.value ?? '')).join('')
+    let oldOffset = 0
+
+    for (const newChild of newChildren) {
+      const newText = newChild.type === 'text'
+        ? String(newChild.value ?? '')
+        : extractTextFromNode(newChild)
+
+      if (newChild.type === 'text') {
+        // 公共纯文本 → 直接输出
+        result.push({ type: 'text', value: newText })
+      } else if (INLINE_TYPES.has(newChild.type)) {
+        // 新 inline 元素 → 从旧文本对应位置取出等长文本，标记结构变化
+        const oldPart = oldFullText.substring(oldOffset, oldOffset + newText.length)
+        result.push({ type: 'diff', diffType: 'delete', value: oldPart })
+        result.push({ type: 'diff', diffType: 'insert', value: newText, originalNode: newChild })
+        changed = true
+      }
+      oldOffset += newText.length
     }
+
+    return { children: result, changed }
   }
 
-  let newSegIdx = 0
-  let newCharOffset = 0
-
+  // 旧侧有 inline 元素，新侧全是纯文本（或双侧都有 inline 但结构不同）
+  // 策略：以旧侧子节点为框架，旧 inline → del+ins(纯文本)
   for (const oldChild of oldChildren) {
     const isOldInline = INLINE_TYPES.has(oldChild.type)
     const oldText = extractTextFromNode(oldChild)
 
     if (!isOldInline && oldChild.type === 'text') {
-      // 纯文本节点，尝试在新节点中找到对应位置
-      // 跳过新节点游标直到覆盖这段文本
-      const oldVal = String(oldChild.value ?? '')
-      advanceNewCursor(newSegments, oldVal, newSegIdx, newCharOffset)
-      // 这里简化处理：直接保留文本（公共部分）
+      // 纯文本节点 → 直接保留（公共部分）
       result.push(stripMeta(oldChild))
     } else if (isOldInline) {
       // 旧 inline 元素 → 标记为 delete（保留原始格式节点，渲染时恢复格式）
@@ -296,9 +400,8 @@ function generateInlineStructureDiff(
   }
 
   // 处理新节点中多出的 inline 元素（旧节点中没有的）
-  // 找出旧节点中不存在的 inline 元素
   const oldInlineTexts = new Set(
-    oldChildren.filter(c => INLINE_TYPES.has(c.type)).map(c => extractTextFromNode(c))
+    oldChildren.filter((c) => INLINE_TYPES.has(c.type)).map((c) => extractTextFromNode(c))
   )
   for (const child of newChildren) {
     if (INLINE_TYPES.has(child.type)) {
@@ -312,7 +415,7 @@ function generateInlineStructureDiff(
     }
   }
 
-  return { children: result, changed: changed || result.some(c => c.type === 'diff') }
+  return { children: result, changed: changed || result.some((c) => c.type === 'diff') }
 }
 
 /**
@@ -350,7 +453,7 @@ function shouldFlattenToTextDiff(
   if (oldChildren.length === 0 || newChildren.length === 0) return false
 
   // 检查是否有 inline 元素（非纯 text）
-  const INLINE_TYPES = new Set(['strong', 'em', 'a', 'code', 'inlineCode', 'delete', 'image'])
+  const INLINE_TYPES = new Set(['strong', 'emphasis', 'link', 'code', 'inlineCode', 'delete', 'image'])
   const oldHasInline = oldChildren.some((c) => INLINE_TYPES.has(c.type))
   const newHasInline = newChildren.some((c) => INLINE_TYPES.has(c.type))
 
@@ -365,14 +468,16 @@ function shouldFlattenToTextDiff(
 }
 
 /**
- * 将 inline mdast 节点渲染为 HTML，保留原始格式标签。
+ * 将 inline mdast 节点递归渲染为 HTML，保留原始格式标签（包括嵌套）。
  * 用于在 diff 标记（<del>/<ins>）中保留 bold/italic/code 等视觉效果。
+ *
+ * 例如 strong → emphasis → text("hi") 渲染为 <strong><em>hi</em></strong>
  */
 function renderInlineNodeAsHtml(node: MdastNode, escapedText: string): string {
   switch (node.type) {
     case 'strong':
       return `<strong>${escapedText}</strong>`
-    case 'em':
+    case 'emphasis':
       return `<em>${escapedText}</em>`
     case 'delete':
       // mdast delete 是 ~~strikethrough~~，HTML 用 <s> 避免与 diff 的 <del> 冲突
@@ -381,9 +486,32 @@ function renderInlineNodeAsHtml(node: MdastNode, escapedText: string): string {
       return `<code>${escapedText}</code>`
     case 'link':
       return `<a href="${escapeHtml(String(node.url ?? ''))}">${escapedText}</a>`
+    case 'image':
+      return `<img src="${escapeHtml(String(node.url ?? ''))}" alt="${escapeHtml(String(node.alt ?? ''))}" />`
     default:
       return escapedText
   }
+}
+
+/**
+ * 递归渲染 inline mdast 节点及其子节点为 HTML。
+ * 处理嵌套的 inline 结构（如 strong > emphasis > text）。
+ */
+function renderInlineNodeTreeAsHtml(node: MdastNode): string {
+  const INLINE_TYPES = new Set(['strong', 'emphasis', 'link', 'inlineCode', 'delete', 'image'])
+
+  if (node.type === 'text') {
+    return escapeHtml(String(node.value ?? ''))
+  }
+
+  if (!INLINE_TYPES.has(node.type)) {
+    return escapeHtml(extractTextFromNode(node))
+  }
+
+  // 递归渲染子节点
+  const children = (node.children as MdastNode[] | undefined) ?? []
+  const innerHtml = children.map((child) => renderInlineNodeTreeAsHtml(child)).join('')
+  return renderInlineNodeAsHtml(node, innerHtml)
 }
 
 function normalizeDiffNodes(node: MdastNode): MdastNode {
@@ -392,10 +520,10 @@ function normalizeDiffNodes(node: MdastNode): MdastNode {
     const text = escapeHtml(String(node.value ?? ''))
     const originalNode = node.originalNode as MdastNode | undefined
 
-    // 保留原始 inline 格式（strong/em/inlineCode 等）
+    // 保留原始 inline 格式（strong/em/inlineCode 等，包括嵌套）
     let content = text
     if (originalNode) {
-      content = renderInlineNodeAsHtml(originalNode, text)
+      content = renderInlineNodeTreeAsHtml(originalNode)
     }
 
     return {
@@ -408,26 +536,39 @@ function normalizeDiffNodes(node: MdastNode): MdastNode {
   }
 
   // 处理 code-diff / inlineCode-diff 节点：将字符级 diff 渲染为带标记的 HTML
+  // 使用 lowlight 对每个文本段分别进行语法高亮，保留 del/ins 标记
   if (node.type === 'code-diff' || node.type === 'inlineCode-diff') {
     const isBlock = node.type === 'code-diff'
     const lang = String(node.lang ?? '')
     const diffId = String((node.data as Record<string, unknown> | undefined)?.diffId ?? '')
     const diffType = String((node.data as Record<string, unknown> | undefined)?.diffType ?? '')
 
-    const diffHtml = (node.children as MdastNode[] ?? []).map(child => {
-      if (child.type === 'diff') {
-        const tag = child.diffType === 'delete' ? 'del' : 'ins'
-        const cls = child.diffType === 'delete' ? 'diff-delete' : 'diff-insert'
-        return `<${tag} class="${cls}">${escapeHtml(String(child.value ?? ''))}</${tag}>`
-      }
-      return escapeHtml(String(child.value ?? ''))
-    }).join('')
+    const diffHtml = ((node.children as MdastNode[]) ?? [])
+      .map((child) => {
+        const rawText = String(child.value ?? '')
+        if (child.type === 'diff') {
+          const tag = child.diffType === 'delete' ? 'del' : 'ins'
+          const cls = child.diffType === 'delete' ? 'diff-delete' : 'diff-insert'
+          // 对 diff 文本段进行语法高亮
+          const highlighted = isBlock ? highlightCodeText(rawText, lang) : escapeHtml(rawText)
+          return `<${tag} class="${cls}">${highlighted}</${tag}>`
+        }
+        // 对未变更文本段进行语法高亮
+        return isBlock ? highlightCodeText(rawText, lang) : escapeHtml(rawText)
+      })
+      .join('')
 
+    // 添加 no-highlight 类，让 rehype-highlight 跳过此 code 元素（已手动高亮）
+    const classList = ['hljs']
+    if (lang) classList.push(`language-${lang}`)
+    classList.push('no-highlight')
     const codeAttrs = [
-      lang ? `class="language-${lang}"` : '',
+      `class="${classList.join(' ')}"`,
       diffId ? `data-diff-id="${diffId}"` : '',
       diffType ? `data-diff-type="${diffType}"` : '',
-    ].filter(Boolean).join(' ')
+    ]
+      .filter(Boolean)
+      .join(' ')
 
     if (isBlock) {
       return {
@@ -606,25 +747,78 @@ function mergeEqualNodes(
     return { node: { ...stripMeta(newNode), children }, changed }
   }
 
+  /**
+   * tableRow 的子节点（tableCell）必须按列位置配对，
+   * 而非用 LCS 自由匹配。否则内容差异大的同一列 cell
+   * 会被拆为独立的 delete/insert cell，超出表格列数被截断。
+   */
+  if (oldNode.type === 'tableRow' && newNode.type === 'tableRow') {
+    let rowChanged = false
+    const rowChildren: MdastNode[] = []
+    const maxLen = Math.max(oldChildren.length, newChildren.length)
+    for (let i = 0; i < maxLen; i++) {
+      const oldCell = oldChildren[i]
+      const newCell = newChildren[i]
+      if (oldCell && newCell) {
+        const sub = mergeEqualNodes(oldCell, newCell, mode, config)
+        if (sub.changed) rowChanged = true
+        rowChildren.push(sub.node)
+      } else if (newCell) {
+        // 新增列
+        rowChanged = true
+        rowChildren.push(annotateNode(stripMeta(newCell), '', 'insert'))
+      } else if (oldCell) {
+        // 删除列
+        rowChanged = true
+        rowChildren.push(annotateNode(stripMeta(oldCell), '', 'delete'))
+      }
+    }
+    return { node: { ...stripMeta(newNode), children: rowChildren }, changed: rowChanged }
+  }
+
   // 递归时透传 config（autoMatchCodeLangs 仅顶层使用）
   const childDiff = mergeSubsequence(addKeyToNodes(oldChildren), addKeyToNodes(newChildren), config)
   let changed = false
   const mergedChildren: MdastNode[] = []
 
   /**
+   * 需要生成行内 diff 标记（<del>/<ins>）的节点类型。
+   * 这些节点在 insert/delete 时应保留原始格式（如 <strong>、<em>），
+   * 同时用 diff-delete/diff-insert 样式标识变更。
+   */
+  const INLINE_DIFF_TYPES = new Set(['text', 'strong', 'emphasis', 'link', 'inlineCode', 'delete', 'image'])
+
+  /**
    * 对子节点执行递归合并：
-   * - insert / delete 直接保留原结构；
+   * - insert / delete 的 inline 节点生成带格式保留的 diff 标记；
+   * - insert / delete 的非 inline 节点直接保留原结构；
    * - equal 节点继续向下比较文本差异；
    */
   for (const item of childDiff) {
     const dt = item.__data.diffType
 
-    /**
-     * insert / delete 节点不做进一步拆解，直接作为结构性变更保留。
-     */
     if (dt === 'insert' || dt === 'delete') {
       changed = true
-      mergedChildren.push(stripMeta(item))
+      const itemNode = stripMeta(item) as MdastNode
+      if (INLINE_DIFF_TYPES.has(itemNode.type)) {
+        // inline 元素变更：保留原始格式标签，生成 del/ins 标记
+        mergedChildren.push({
+          type: 'diff',
+          diffType: dt,
+          value: extractTextFromNode(itemNode),
+          originalNode: itemNode,
+        })
+      } else {
+        // 可整体标注的块级子节点（如 tableRow、listItem）：添加 diff 标注
+        // 以便 rehype 阶段能识别并渲染红/绿样式
+        // 注意：tableCell 不在此列，因为多个 diff cell 会超出列数被截断
+        const ANNOTATABLE_CHILD_TYPES = new Set(['tableRow', 'listItem'])
+        if (ANNOTATABLE_CHILD_TYPES.has(itemNode.type)) {
+          mergedChildren.push(annotateNode(itemNode, '', dt))
+        } else {
+          mergedChildren.push(itemNode)
+        }
+      }
     } else if (dt === 'equal' && item.__data.node) {
       const { oldNode: o, newNode: n } = item.__data.node
       /**
@@ -649,9 +843,7 @@ function mergeEqualNodes(
   }
   return { node: { ...stripMeta(newNode), children: mergedChildren }, changed }
 }
-/**
- * 为节点数组补充用于 LCS 比较的 key，并递归处理子节点。
- */
+
 /**
  * 为节点数组补充用于 LCS 比较的 key，并递归处理子节点。
  *
@@ -670,11 +862,7 @@ function addKeyToNodes(nodes: any[]): any[] {
 }
 /**
  * 为单个节点生成结构 key。
- *
  * key 只关注节点类型和结构属性，避免把纯文本变化误判为结构变化。
- */
-/**
- * 为单个节点生成结构 key。
  *
  * @param node - 需要生成 key 的节点。
  * @returns 节点结构 key。
@@ -700,6 +888,9 @@ function nodeKey(node: any): string {
       break
     case 'table':
       parts.push(String(node.align?.length || 0))
+      break
+    case 'list':
+      parts.push(`o${node.ordered ? 1 : 0}`)
       break
   }
   return parts.join('|')
@@ -731,7 +922,7 @@ function extractTextFromNode(node: MdastNode): string {
  * @param node - mdast 节点。
  * @returns 带格式标记的文本字符串。
  */
-function extractFormattedText(node: MdastNode): string {
+export function extractFormattedText(node: MdastNode): string {
   if (!node) return ''
   if (node.type === 'text') return String(node.value ?? '')
   if (node.type === 'strong') {
@@ -740,7 +931,7 @@ function extractFormattedText(node: MdastNode): string {
       : ''
     return `**${inner}**`
   }
-  if (node.type === 'em') {
+  if (node.type === 'emphasis') {
     const inner = Array.isArray(node.children)
       ? (node.children as MdastNode[]).map(extractFormattedText).join('')
       : ''
@@ -778,14 +969,11 @@ function extractFormattedText(node: MdastNode): string {
  * 提取节点纯文本后，用 LCS 长度占较长文本长度的比例作为相似度。
  * 两个空文本的相似度定义为 1.0。
  *
- * @param oldNode - 旧节点。
- * @param newNode - 新节点。
+ * @param oldText - 旧文本。
+ * @param newText - 新文本。
  * @returns 相似度（0~1）。
  */
-function computeTextSimilarity(oldNode: MdastNode, newNode: MdastNode): number {
-  const oldText = extractTextFromNode(oldNode)
-  const newText = extractTextFromNode(newNode)
-
+function computeTextSimilarity(oldText: string, newText: string): number {
   if (oldText.length === 0 && newText.length === 0) return 1.0
   if (oldText.length === 0 || newText.length === 0) return 0.0
 
@@ -889,7 +1077,11 @@ function canNodesMatch(
       if (String(oldNode.alt ?? '') !== String(newNode.alt ?? '')) return false
       break
     case 'table':
-      if ((oldNode.align as unknown[])?.length !== (newNode.align as unknown[])?.length) return false
+      if ((oldNode.align as unknown[])?.length !== (newNode.align as unknown[])?.length)
+        return false
+      break
+    case 'list':
+      if (oldNode.ordered !== newNode.ordered) return false
       break
   }
 
@@ -899,7 +1091,7 @@ function canNodesMatch(
   if (oldText.length === 0 && newText.length === 0) return true
 
   // 计算相似度
-  return computeTextSimilarity(oldNode, newNode) >= threshold
+  return computeTextSimilarity(oldText, newText) >= threshold
 }
 
 /**
@@ -911,53 +1103,99 @@ function canNodesMatch(
  * @param autoMatchCodeLangs - 1:1 code lang 集合（可选）。
  * @returns diff 结果数组。
  */
+/**
+ * 计算两个可匹配节点的匹配权重（基于文本相似度）。
+ *
+ * 权重越高表示匹配质量越好，LCS 会优先选择高权重的匹配路径，
+ * 避免弱匹配"抢占"强匹配的位置。
+ *
+ * @param oldNode - 旧节点。
+ * @param newNode - 新节点。
+ * @param autoMatchCodeLangs - 1:1 code lang 集合。
+ * @returns 匹配权重（0~1）。
+ */
+function computeMatchWeight(
+  oldNode: MdastNode,
+  newNode: MdastNode,
+  autoMatchCodeLangs: Set<string>
+): number {
+  // 自动匹配的代码块（唯一 lang），给予最高权重
+  if (oldNode.type === 'code' && autoMatchCodeLangs.has(String(oldNode.lang ?? ''))) {
+    return 1.0
+  }
+  const oldText = extractTextFromNode(oldNode)
+  const newText = extractTextFromNode(newNode)
+  if (oldText.length === 0 && newText.length === 0) return 1.0
+  return computeTextSimilarity(oldText, newText)
+}
+
 function mergeSubsequence<T extends { key: string }>(
   oldAst: T[],
   newAst: T[],
   config?: DiffConfig,
   autoMatchCodeLangs?: Set<string>
 ): DiffNode<T>[] {
-  const dp = buildDP(oldAst, newAst, config, autoMatchCodeLangs)
-  return backtrackDiff(dp, oldAst, newAst, config, autoMatchCodeLangs)
+  const dpResult = buildDP(oldAst, newAst, config, autoMatchCodeLangs)
+  return backtrackDiff(dpResult, oldAst, newAst, config, autoMatchCodeLangs)
 }
 /**
- * 构建 LCS 动态规划表。
+ * 构建加权 LCS 动态规划表。
+ *
+ * 与传统等权 LCS 不同，此处使用文本相似度作为匹配权重，
+ * 使算法优先选择高质量匹配，避免弱匹配抢占位置。
  *
  * @param oldAst - 旧序列。
  * @param newAst - 新序列。
  * @param config - diff 配置（可选，不传则使用 key 严格匹配）。
  * @param autoMatchCodeLangs - 1:1 code lang 集合（可选）。
- * @returns 动态规划表。
+ * @returns 动态规划表和权重矩阵。
  */
 function buildDP<T extends { key: string }>(
   oldAst: T[],
   newAst: T[],
   config?: DiffConfig,
   autoMatchCodeLangs?: Set<string>
-) {
+): { dp: number[][]; weights: number[][] } {
   const m = oldAst.length
   const n = newAst.length
   const dp: number[][] = Array.from({ length: m + 1 }, () => Array(n + 1).fill(0))
+  const weights: number[][] = Array.from({ length: m + 1 }, () => Array(n + 1).fill(0))
   const threshold = config?.similarityThreshold ?? 1.0
   const langs = autoMatchCodeLangs ?? new Set<string>()
 
-  /**
-   * 双层循环逐步填充 dp 表，记录两个序列的最长公共子序列长度。
-   * 当 config 存在时使用 canNodesMatch 模糊匹配，否则使用 key 严格匹配。
-   */
   for (let i = 1; i <= m; i++)
     for (let j = 1; j <= n; j++) {
       const matched = config
-        ? canNodesMatch(oldAst[i - 1] as unknown as MdastNode, newAst[j - 1] as unknown as MdastNode, threshold, langs)
+        ? canNodesMatch(
+            oldAst[i - 1] as unknown as MdastNode,
+            newAst[j - 1] as unknown as MdastNode,
+            threshold,
+            langs
+          )
         : oldAst[i - 1].key === newAst[j - 1].key
-      dp[i][j] = matched ? dp[i - 1][j - 1] + 1 : Math.max(dp[i - 1][j], dp[i][j - 1])
+      if (matched) {
+        const weight = config
+          ? computeMatchWeight(
+              oldAst[i - 1] as unknown as MdastNode,
+              newAst[j - 1] as unknown as MdastNode,
+              langs
+            )
+          : 1
+        weights[i][j] = weight
+        dp[i][j] = Math.max(dp[i - 1][j - 1] + weight, dp[i - 1][j], dp[i][j - 1])
+      } else {
+        dp[i][j] = Math.max(dp[i - 1][j], dp[i][j - 1])
+      }
     }
-  return dp
+  return { dp, weights }
 }
 /**
- * 根据 dp 表从右下角回溯，生成 insert / delete / equal 序列。
+ * 根据加权 dp 表从右下角回溯，生成 insert / delete / equal 序列。
  *
- * @param dp - LCS 动态规划表。
+ * 回溯时需判断匹配是否被 DP 选中（dp[i][j] == dp[i-1][j-1] + weight），
+ * 而非仅判断 canNodesMatch，避免弱匹配被错误采纳。
+ *
+ * @param dpResult - buildDP 返回的 dp 表和权重矩阵。
  * @param oldAst - 旧序列。
  * @param newAst - 新序列。
  * @param config - diff 配置（可选，不传则使用 key 严格匹配）。
@@ -965,26 +1203,35 @@ function buildDP<T extends { key: string }>(
  * @returns 回溯得到的 diff 序列。
  */
 function backtrackDiff<T extends { key: string }>(
-  dp: number[][],
+  dpResult: { dp: number[][]; weights: number[][] },
   oldAst: T[],
   newAst: T[],
   config?: DiffConfig,
   autoMatchCodeLangs?: Set<string>
 ): DiffNode<T>[] {
+  const { dp, weights } = dpResult
   const result: DiffNode<T>[] = []
   let i = oldAst.length
   let j = newAst.length
   const threshold = config?.similarityThreshold ?? 1.0
   const langs = autoMatchCodeLangs ?? new Set<string>()
+  const EPS = 1e-9
 
-  /**
-   * 回溯过程中优先处理相等节点，再根据 dp 值决定删除还是插入。
-   */
   while (i > 0 || j > 0) {
-    const matched = i > 0 && j > 0 && (config
-      ? canNodesMatch(oldAst[i - 1] as unknown as MdastNode, newAst[j - 1] as unknown as MdastNode, threshold, langs)
-      : oldAst[i - 1].key === newAst[j - 1].key)
-    if (matched) {
+    const canMatch =
+      i > 0 &&
+      j > 0 &&
+      (config
+        ? canNodesMatch(
+            oldAst[i - 1] as unknown as MdastNode,
+            newAst[j - 1] as unknown as MdastNode,
+            threshold,
+            langs
+          )
+        : oldAst[i - 1].key === newAst[j - 1].key)
+
+    // 仅当 DP 实际选择了该匹配时才走对角线
+    if (canMatch && Math.abs(dp[i][j] - (dp[i - 1][j - 1] + weights[i][j])) < EPS) {
       result.unshift({
         ...newAst[j - 1],
         __data: { diffType: 'equal', node: { oldNode: oldAst[i - 1], newNode: newAst[j - 1] } },
@@ -993,7 +1240,7 @@ function backtrackDiff<T extends { key: string }>(
       j--
       continue
     }
-    if (i > 0 && (j === 0 || dp[i - 1][j] >= dp[i][j - 1])) {
+    if (i > 0 && (j === 0 || dp[i - 1][j] > dp[i][j - 1] + EPS)) {
       result.unshift({ ...oldAst[i - 1], __data: { diffType: 'delete' } })
       i--
       continue
@@ -1079,40 +1326,104 @@ function wrapHunk(node: HastNode): Element {
     children: [createToolbar(), content],
   }
 }
-const WRAPPABLE_TAGS = new Set(['p', 'span', 'strong', 'em', 'code', 'a', 'del', 'ins', 'text', 'pre', 'table'])
+const WRAPPABLE_TAGS = new Set([
+  'p',
+  'span',
+  'strong',
+  'em',
+  'code',
+  'a',
+  'del',
+  'ins',
+  'text',
+  'pre',
+  'table',
+  'h1',
+  'h2',
+  'h3',
+  'h4',
+  'h5',
+  'h6',
+  'blockquote',
+  'ul',
+  'ol',
+  'li',
+  'hr',
+  'img',
+  'div',
+])
 type HastNode = Element & { data?: { diffId?: string; diffType?: string } }
 /**
  * 为渲染后的 HAST 注入 diff 相关的 DOM 结构。
  */
 function rehypeDiffAnnotations() {
+  /**
+   * 不能被 <div> 包裹的标签（如 <tr> 在 <table> 内不能被 <div> 包裹），
+   * 对这些标签直接添加 diff CSS 类。
+   */
+  const DIRECT_ANNOTATE_TAGS = new Set(['tr', 'td', 'th', 'thead', 'tbody', 'tfoot', 'li'])
+
   return (tree: HastRoot) => {
-    /**
-     * 仅处理根层级元素，避免误包裹内部文本节点或嵌套结构。
-     */
     visit(tree, 'element', (node: HastNode, index, parent) => {
-      if (!parent || index == null || parent !== tree) return
+      if (!parent || index == null) return
 
       // 特殊处理 <pre>：将子 <code> 的 diff 属性传播到 <pre>
       // 因为 remark-rehype 将 code 节点的 hProperties 放在 <code> 而非 <pre> 上
+      // 同时提取语言信息，为代码块添加语言标签
       if (node.tagName === 'pre' && node.children) {
         const codeChild = node.children.find(
           (child): child is HastNode => child.type === 'element' && child.tagName === 'code'
         )
         if (codeChild) {
-          const { diffId, diffType } = getDiffMeta(codeChild)
-          if (diffId && diffType && diffType !== 'unchanged') {
+          const { diffId: preDiffId, diffType: preDiffType } = getDiffMeta(codeChild)
+          if (preDiffId && preDiffType && preDiffType !== 'unchanged') {
             if (!node.data) node.data = {}
-            node.data.diffId = diffId
-            node.data.diffType = diffType
+            node.data.diffId = preDiffId
+            node.data.diffType = preDiffType
             if (!node.properties) node.properties = {}
-            ;(node.properties as Record<string, unknown>).dataDiffId = diffId
-            ;(node.properties as Record<string, unknown>).dataDiffType = diffType
+            ;(node.properties as Record<string, unknown>).dataDiffId = preDiffId
+            ;(node.properties as Record<string, unknown>).dataDiffType = preDiffType
+          }
+
+          // 提取语言信息并添加语言标签
+          const codeClasses = (codeChild.properties as Record<string, unknown>)?.className
+          const classList = typeof codeClasses === 'string' ? codeClasses.split(/\s+/)
+            : Array.isArray(codeClasses) ? codeClasses as string[] : []
+          const langClass = classList.find((c: string) => c.startsWith('language-'))
+          if (langClass) {
+            const lang = langClass.replace('language-', '')
+            // 在 <pre> 内最前面插入语言标签
+            const labelNode: HastNode = {
+              type: 'element',
+              tagName: 'span',
+              properties: { className: ['code-lang-label'] },
+              children: [{ type: 'text', value: lang }],
+            } as unknown as HastNode
+            node.children = [labelNode, ...node.children]
           }
         }
       }
 
       const { diffId, diffType } = getDiffMeta(node)
-      if (!diffType || diffType === 'unchanged' || !diffId) return
+      if (!diffType || diffType === 'unchanged') return
+
+      // 不能被 <div> 包裹的标签：直接添加 diff CSS 类
+      if (DIRECT_ANNOTATE_TAGS.has(node.tagName)) {
+        const cls = diffType === 'insert' ? 'diff-hunk--insert'
+          : diffType === 'delete' ? 'diff-hunk--delete'
+          : 'diff-hunk--modified'
+        if (!node.properties) node.properties = {}
+        const existing = (node.properties as Record<string, unknown>).className
+        const classes = typeof existing === 'string' ? existing.split(/\s+/) : Array.isArray(existing) ? existing as string[] : []
+        if (!classes.includes(cls)) classes.push(cls)
+        ;(node.properties as Record<string, unknown>).className = classes
+        return
+      }
+
+      // 根层级元素：用 <div> 包裹并添加工具栏
+      if (parent !== tree) return
+
+      if (!diffId) return
       if (!WRAPPABLE_TAGS.has(node.tagName)) return
       parent.children[index] = wrapHunk(node)
     })

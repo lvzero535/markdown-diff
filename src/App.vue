@@ -1,12 +1,18 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref, computed, watch } from 'vue'
 import MarkdownDiff from './components/MarkdownDiff.vue'
 import JsonViewer from 'vue-json-viewer'
-import { oldMarkdown as defaultOldMarkdown, newMarkdown as defaultNewMarkdown } from './data/mockData'
+import { scenarios } from './data/mockData'
 import { parseMarkdown, buildMergedMdast } from './utils/markdownDiff'
 
-const oldMarkdown = ref(defaultOldMarkdown)
-const newMarkdown = ref(defaultNewMarkdown)
+const selectedScenarioIndex = ref(scenarios.length - 1)
+const oldMarkdown = ref(scenarios[selectedScenarioIndex.value].oldMarkdown)
+const newMarkdown = ref(scenarios[selectedScenarioIndex.value].newMarkdown)
+
+watch(selectedScenarioIndex, (idx) => {
+  oldMarkdown.value = scenarios[idx].oldMarkdown
+  newMarkdown.value = scenarios[idx].newMarkdown
+})
 
 const oldAst = computed(() => parseMarkdown(oldMarkdown.value))
 const newAst = computed(() => parseMarkdown(newMarkdown.value))
@@ -24,6 +30,17 @@ const mergedMdast = computed(() => buildMergedMdast(oldAst.value, newAst.value).
 
     <!-- 主内容区域 -->
     <main class="main-content">
+      <!-- 场景选择器 -->
+      <div class="scenario-selector">
+        <label for="scenario-select" class="label">切换场景：</label>
+        <select id="scenario-select" v-model.number="selectedScenarioIndex" class="scenario-select">
+          <option v-for="(scenario, index) in scenarios" :key="index" :value="index">
+            {{ scenario.name }}
+          </option>
+        </select>
+        <span class="scenario-count">{{ selectedScenarioIndex + 1 }} / {{ scenarios.length }}</span>
+      </div>
+
       <!-- Markdown 编辑器区域：左右双栏布局，分别输入新旧 Markdown -->
       <div class="editor-section">
         <!-- 旧 Markdown 编辑器 -->
@@ -58,10 +75,7 @@ const mergedMdast = computed(() => buildMergedMdast(oldAst.value, newAst.value).
             <span class="label">Rendered Diff Result</span>
           </div>
           <!-- MarkdownDiff 组件：核心差异对比展示，支持行内文本级差异高亮 -->
-          <MarkdownDiff
-            :old-markdown="oldMarkdown"
-            v-model:new-markdown="newMarkdown"
-          />
+          <MarkdownDiff :old-markdown="oldMarkdown" v-model:new-markdown="newMarkdown" @update:old-markdown="oldMarkdown = $event" />
         </div>
       </div>
 
@@ -93,7 +107,6 @@ const mergedMdast = computed(() => buildMergedMdast(oldAst.value, newAst.value).
           <JsonViewer :value="mergedMdast" :expand-depth="2" class="json-viewer" />
         </div>
       </div>
-
     </main>
   </div>
 </template>
@@ -125,6 +138,47 @@ const mergedMdast = computed(() => buildMergedMdast(oldAst.value, newAst.value).
 .main-content {
   max-width: 1400px;
   margin: 0 auto;
+}
+
+.scenario-selector {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: white;
+  border-radius: 12px;
+  padding: 12px 20px;
+  margin-bottom: 20px;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.15);
+}
+
+.scenario-selector .label {
+  white-space: nowrap;
+  color: #555;
+  font-size: 0.95rem;
+}
+
+.scenario-select {
+  flex: 1;
+  padding: 8px 12px;
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  font-size: 14px;
+  background: #fafafa;
+  color: #333;
+  cursor: pointer;
+  outline: none;
+  transition: border-color 0.2s;
+}
+
+.scenario-select:focus {
+  border-color: #667eea;
+  box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.15);
+}
+
+.scenario-count {
+  font-size: 0.85rem;
+  color: #888;
+  white-space: nowrap;
 }
 
 .editor-section {

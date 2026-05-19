@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
-import { parseMarkdown, buildMergedMdast, renderMdastToHtml, applyHunkResolution, mdastToMarkdown } from '../utils/markdownDiff'
+import { parseMarkdown, buildMergedMdast, renderMdastToHtml, applyHunkResolution, applyHunkAcceptOnOldAst, mdastToMarkdown } from '../utils/markdownDiff'
 import type { DiffHunk } from '../utils/markdownDiff'
 
 /**
@@ -23,6 +23,8 @@ const props = defineProps<{
  * 以便父组件同步刷新编辑器中的内容。
  */
 const emit = defineEmits<{
+  /** 更新旧 Markdown 内容。 */
+  'update:oldMarkdown': [value: string]
   /** 更新新 Markdown 内容。 */
   'update:newMarkdown': [value: string]
 }>()
@@ -80,9 +82,17 @@ function onContentClick(e: MouseEvent) {
   const hunk = hunksRef.value.get(id)
   if (!hunk) return
 
-  const newAst = parseMarkdown(props.newMarkdown)
-  const patched = applyHunkResolution(newAst, hunk, action)
-  emit('update:newMarkdown', mdastToMarkdown(patched))
+  if (action === 'accept') {
+    // 接受变更：修改 oldMarkdown 使其与该 hunk 的新版本内容一致
+    const oldAst = parseMarkdown(props.oldMarkdown)
+    const patchedOld = applyHunkAcceptOnOldAst(oldAst, hunk)
+    emit('update:oldMarkdown', mdastToMarkdown(patchedOld))
+  } else {
+    // 拒绝变更：修改 newMarkdown 恢复该 hunk 的旧版本内容
+    const newAst = parseMarkdown(props.newMarkdown)
+    const patched = applyHunkResolution(newAst, hunk, action)
+    emit('update:newMarkdown', mdastToMarkdown(patched))
+  }
 }
 </script>
 
@@ -99,6 +109,9 @@ function onContentClick(e: MouseEvent) {
 </template>
 
 <style>
+/* highlight.js 代码高亮主题 */
+@import 'highlight.js/styles/github.css';
+
 /* 整体 diff 面板容器 */
 .markdown-diff-container {
   padding: 20px;
@@ -184,19 +197,57 @@ function onContentClick(e: MouseEvent) {
   color: #1f2937;
 }
 
+.markdown-diff-content :deep(tbody tr.diff-hunk--insert) {
+  background: rgba(16, 185, 129, 0.1);
+}
+
 .markdown-diff-content :deep(tbody tr.diff-hunk--delete),
 .markdown-diff-content :deep(tbody tr.diff-hunk--modified) {
   background: rgba(239, 68, 68, 0.06);
 }
 
-.markdown-diff-content :deep(pre) {
-  background-color: #f3f4f6;
-  padding: 1em;
-  border-radius: 4px;
-  overflow-x: auto;
+.markdown-diff-content :deep(li.diff-hunk--insert) {
+  background: rgba(16, 185, 129, 0.1);
 }
 
-.markdown-diff-content :deep(code) {
+.markdown-diff-content :deep(li.diff-hunk--delete),
+.markdown-diff-content :deep(li.diff-hunk--modified) {
+  background: rgba(239, 68, 68, 0.06);
+}
+
+.markdown-diff-content :deep(pre) {
+  background-color: #f6f8fa;
+  padding: 1em;
+  border-radius: 6px;
+  overflow-x: auto;
+  position: relative;
+}
+
+.markdown-diff-content :deep(pre .code-lang-label) {
+  position: absolute;
+  top: 0;
+  right: 0;
+  padding: 2px 8px;
+  font-size: 11px;
+  color: #6b7280;
+  background: #e5e7eb;
+  border-radius: 0 6px 0 4px;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  pointer-events: none;
+  line-height: 1.4;
+}
+
+.markdown-diff-content :deep(pre code) {
+  background-color: transparent;
+  padding: 0;
+  border-radius: 0;
+  font-family: 'Fira Code', 'Monaco', 'Consolas', monospace;
+  font-size: 0.9em;
+}
+
+.markdown-diff-content :deep(:not(pre) > code) {
   background-color: #f3f4f6;
   padding: 0.2em 0.4em;
   border-radius: 4px;
@@ -207,7 +258,7 @@ function onContentClick(e: MouseEvent) {
 .diff-delete {
   background-color: #fecaca;
   color: #dc2626;
-  text-decoration: line-through;
+  text-decoration: auto;
   padding: 1px 3px;
   border-radius: 2px;
 }
