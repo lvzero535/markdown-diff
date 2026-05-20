@@ -127,28 +127,28 @@ function onContentClick(e: MouseEvent) {
   color: #333;
 }
 
-.markdown-diff-content :deep(h1),
-.markdown-diff-content :deep(h2),
-.markdown-diff-content :deep(h3) {
+.markdown-diff-content h1,
+.markdown-diff-content h2,
+.markdown-diff-content h3 {
   font-weight: 600;
   margin-top: 1.5em;
   margin-bottom: 0.5em;
 }
 
-.markdown-diff-content :deep(h1) {
+.markdown-diff-content h1 {
   font-size: 2em;
   margin-top: 0;
 }
 
-.markdown-diff-content :deep(h2) {
+.markdown-diff-content h2 {
   font-size: 1.5em;
 }
 
-.markdown-diff-content :deep(p) {
+.markdown-diff-content p {
   margin: 1em 0;
 }
 
-.markdown-diff-content :deep(table) {
+.markdown-diff-content table {
   width: 100%;
   border-collapse: collapse;
   margin: 1.25em 0;
@@ -160,12 +160,12 @@ function onContentClick(e: MouseEvent) {
   table-layout: fixed;
 }
 
-.markdown-diff-content :deep(thead) {
+.markdown-diff-content thead {
   background: linear-gradient(180deg, #f8fafc 0%, #eef2f7 100%);
 }
 
-.markdown-diff-content :deep(th),
-.markdown-diff-content :deep(td) {
+.markdown-diff-content th,
+.markdown-diff-content td {
   padding: 12px 14px;
   border-right: 1px solid #e5e7eb;
   border-bottom: 1px solid #e5e7eb;
@@ -174,48 +174,60 @@ function onContentClick(e: MouseEvent) {
   word-break: break-word;
 }
 
-.markdown-diff-content :deep(th:last-child),
-.markdown-diff-content :deep(td:last-child) {
+.markdown-diff-content th:last-child,
+.markdown-diff-content td:last-child {
   border-right: none;
 }
 
-.markdown-diff-content :deep(thead th) {
+.markdown-diff-content thead th {
   font-weight: 700;
   color: #111827;
   font-size: 15px;
 }
 
-.markdown-diff-content :deep(tbody tr:nth-child(even)) {
+.markdown-diff-content tbody tr:nth-child(even) {
   background: #fafafa;
 }
 
-.markdown-diff-content :deep(tbody tr:hover) {
+.markdown-diff-content tbody tr:hover {
   background: #f3f8ff;
 }
 
-.markdown-diff-content :deep(tbody td) {
+.markdown-diff-content tbody td {
   color: #1f2937;
 }
 
-.markdown-diff-content :deep(tbody tr.diff-hunk--insert) {
+.markdown-diff-content tbody tr.diff-hunk--insert {
   background: rgba(16, 185, 129, 0.1);
 }
 
-.markdown-diff-content :deep(tbody tr.diff-hunk--delete),
-.markdown-diff-content :deep(tbody tr.diff-hunk--modified) {
+.markdown-diff-content tbody tr.diff-hunk--delete,
+.markdown-diff-content tbody tr.diff-hunk--modified {
   background: rgba(239, 68, 68, 0.06);
 }
 
-.markdown-diff-content :deep(li.diff-hunk--insert) {
+/* 列级 diff：新增列单元格绿色 */
+.markdown-diff-content td.diff-hunk--insert,
+.markdown-diff-content th.diff-hunk--insert {
+  background: rgba(16, 185, 129, 0.18);
+}
+
+/* 列级 diff：删除列单元格红色 */
+.markdown-diff-content td.diff-hunk--delete,
+.markdown-diff-content th.diff-hunk--delete {
+  background: rgba(239, 68, 68, 0.12);
+}
+
+.markdown-diff-content li.diff-hunk--insert {
   background: rgba(16, 185, 129, 0.1);
 }
 
-.markdown-diff-content :deep(li.diff-hunk--delete),
-.markdown-diff-content :deep(li.diff-hunk--modified) {
+.markdown-diff-content li.diff-hunk--delete,
+.markdown-diff-content li.diff-hunk--modified {
   background: rgba(239, 68, 68, 0.06);
 }
 
-.markdown-diff-content :deep(pre) {
+.markdown-diff-content pre {
   background-color: #f6f8fa;
   padding: 1em;
   border-radius: 6px;
@@ -223,7 +235,7 @@ function onContentClick(e: MouseEvent) {
   position: relative;
 }
 
-.markdown-diff-content :deep(pre .code-lang-label) {
+.markdown-diff-content pre .code-lang-label {
   position: absolute;
   top: 0;
   right: 0;
@@ -239,7 +251,7 @@ function onContentClick(e: MouseEvent) {
   line-height: 1.4;
 }
 
-.markdown-diff-content :deep(pre code) {
+.markdown-diff-content pre code {
   background-color: transparent;
   padding: 0;
   border-radius: 0;
@@ -247,7 +259,7 @@ function onContentClick(e: MouseEvent) {
   font-size: 0.9em;
 }
 
-.markdown-diff-content :deep(:not(pre) > code) {
+.markdown-diff-content :not(pre) > code {
   background-color: #f3f4f6;
   padding: 0.2em 0.4em;
   border-radius: 4px;

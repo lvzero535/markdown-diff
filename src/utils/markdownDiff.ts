@@ -776,6 +776,51 @@ function mergeEqualNodes(
     return { node: { ...stripMeta(newNode), children: rowChildren }, changed: rowChanged }
   }
 
+  /**
+   * 表格级 diff：基于表头文本计算列对齐关系，确保删除/新增列正确标注。
+   *
+   * 当表格列数不同时，不能简单地按位置配对单元格（tableRow 的处理方式），
+   * 否则删除中间列时会导致右边的列被错标记。
+   * 此处通过比较表头文本，计算旧→新列映射关系，按映射顺序合并单元格。
+   */
+  if (oldNode.type === 'table' && newNode.type === 'table') {
+    const columnMapping = computeColumnMapping(oldChildren, newChildren)
+    const childDiff = mergeSubsequence(addKeyToNodes(oldChildren), addKeyToNodes(newChildren), config)
+    let changed = false
+    const mergedChildren: MdastNode[] = []
+
+    for (const item of childDiff) {
+      const dt = item.__data.diffType
+
+      if (dt === 'insert' || dt === 'delete') {
+        changed = true
+        const itemNode = stripMeta(item) as MdastNode
+        if (itemNode.type === 'tableRow') {
+          mergedChildren.push(annotateNode(itemNode, '', dt))
+        } else {
+          mergedChildren.push(itemNode)
+        }
+      } else if (dt === 'equal' && item.__data.node) {
+        const { oldNode: oRow, newNode: nRow } = item.__data.node
+        const result = mergeTableRowWithMapping(oRow, nRow, columnMapping, mode, config)
+        if (result.changed) changed = true
+        mergedChildren.push(result.node)
+      }
+    }
+
+    const resultNode = { ...stripMeta(newNode), children: mergedChildren }
+
+    // 合并 align 属性，覆盖新增/删除列的对齐信息
+    const oldAlign = (oldNode.align as unknown[]) ?? []
+    const newAlign = (newNode.align as unknown[]) ?? []
+    const mergedAlign = computeMergedAlign(oldAlign, newAlign, columnMapping)
+    if (mergedAlign.length > 0) {
+      ;(resultNode as Record<string, unknown>).align = mergedAlign
+    }
+
+    return { node: resultNode, changed }
+  }
+
   // 递归时透传 config（autoMatchCodeLangs 仅顶层使用）
   const childDiff = mergeSubsequence(addKeyToNodes(oldChildren), addKeyToNodes(newChildren), config)
   let changed = false
@@ -841,7 +886,205 @@ function mergeEqualNodes(
       }
     }
   }
-  return { node: { ...stripMeta(newNode), children: mergedChildren }, changed }
+  const resultNode = { ...stripMeta(newNode), children: mergedChildren }
+
+  // 表格列级 diff：合并 align 属性，确保覆盖新增/删除列的对齐信息
+  if (newNode.type === 'table' && oldNode.type === 'table') {
+    const newAlign = (newNode.align as unknown[]) ?? []
+    const oldAlign = (oldNode.align as unknown[]) ?? []
+    const maxLen = Math.max(newAlign.length, oldAlign.length)
+    if (maxLen > newAlign.length) {
+      ;(resultNode as Record<string, unknown>).align = Array.from({ length: maxLen }, (_, i) =>
+        i < newAlign.length ? newAlign[i] : i < oldAlign.length ? oldAlign[i] : null
+      )
+    }
+  }
+
+  return { node: resultNode, changed }
+}
+
+/**
+ * 列映射类型：记录旧/新表格列之间的对应关系。
+ */
+type ColumnMapping = {
+  /** newToOld[newIdx] = oldIdx，-1 表示新列无匹配（新增列） */
+  newToOld: number[]
+  /** oldToNew[oldIdx] = newIdx，-1 表示旧列无匹配（删除列） */
+  oldToNew: number[]
+}
+
+/**
+ * 基于表头文本计算旧/新表格的列映射关系。
+ *
+ * 通过比较首行（表头行）各单元格的文本内容，
+ * 确定新旧列之间的对应关系，用于在列增删时正确配对单元格。
+ *
+ * @param oldRows - 旧表格的行节点数组。
+ * @param newRows - 新表格的行节点数组。
+ * @returns 列映射关系。
+ */
+function computeColumnMapping(oldRows: MdastNode[], newRows: MdastNode[]): ColumnMapping {
+  const getHeaderTexts = (rows: MdastNode[]): string[] => {
+    if (rows.length === 0) return []
+    const firstRow = rows[0]
+    const cells = (firstRow.children as MdastNode[]) ?? []
+    return cells.map(cell => extractTextFromNode(cell).trim())
+  }
+
+  const oldHeaders = getHeaderTexts(oldRows)
+  const newHeaders = getHeaderTexts(newRows)
+
+  const newToOld: number[] = []
+  const oldToNew: number[] = Array(oldHeaders.length).fill(-1)
+  const usedOldCols = new Set<number>()
+
+  for (let ni = 0; ni < newHeaders.length; ni++) {
+    let matchedOldIdx = -1
+    for (let oi = 0; oi < oldHeaders.length; oi++) {
+      if (!usedOldCols.has(oi) && oldHeaders[oi] === newHeaders[ni]) {
+        matchedOldIdx = oi
+        usedOldCols.add(oi)
+        break
+      }
+    }
+    newToOld.push(matchedOldIdx)
+    if (matchedOldIdx >= 0) {
+      oldToNew[matchedOldIdx] = ni
+    }
+  }
+
+  return { newToOld, oldToNew }
+}
+
+/**
+ * 使用列映射关系合并表格行中的单元格。
+ *
+ * 与 tableRow 中简单的位置配对不同，此函数根据表头文本匹配结果，
+ * 将新旧列正确配对：匹配列合并内容、删除列标红、新增列标绿。
+ *
+ * @param oldRow - 旧行节点。
+ * @param newRow - 新行节点。
+ * @param columnMapping - 列映射关系。
+ * @param mode - diff 模式。
+ * @param config - diff 配置。
+ * @returns 合并后的行节点及是否发生变化。
+ */
+function mergeTableRowWithMapping(
+  oldRow: MdastNode,
+  newRow: MdastNode,
+  columnMapping: ColumnMapping,
+  mode: DiffMode,
+  config?: DiffConfig
+): { node: MdastNode; changed: boolean } {
+  const oldCells = (oldRow.children as MdastNode[]) ?? []
+  const newCells = (newRow.children as MdastNode[]) ?? []
+  const { newToOld, oldToNew } = columnMapping
+
+  let rowChanged = false
+  const rowChildren: MdastNode[] = []
+  let oi = 0
+  let ni = 0
+
+  // 按列映射关系交替输出：匹配列→合并，删除列→红色，新增列→绿色
+  while (oi < oldCells.length || ni < newCells.length) {
+    if (oi < oldCells.length && ni < newCells.length && newToOld[ni] === oi) {
+      // 列匹配：合并单元格内容
+      const sub = mergeEqualNodes(oldCells[oi], newCells[ni], mode, config)
+      if (sub.changed) rowChanged = true
+      rowChildren.push(sub.node)
+      oi++
+      ni++
+    } else if (oi < oldCells.length && oldToNew[oi] === -1) {
+      // 删除列：标记为红色
+      rowChanged = true
+      rowChildren.push(annotateNode(stripMeta(oldCells[oi]), '', 'delete'))
+      oi++
+    } else if (ni < newCells.length && newToOld[ni] === -1) {
+      // 新增列：标记为绿色
+      rowChanged = true
+      rowChildren.push(annotateNode(stripMeta(newCells[ni]), '', 'insert'))
+      ni++
+    } else {
+      // 列映射存在非单调顺序（如列重排序），回退到位置配对
+      break
+    }
+  }
+
+  // 回退：对剩余单元格按位置配对
+  while (oi < oldCells.length && ni < newCells.length) {
+    const sub = mergeEqualNodes(oldCells[oi], newCells[ni], mode, config)
+    if (sub.changed) rowChanged = true
+    rowChildren.push(sub.node)
+    oi++
+    ni++
+  }
+  while (oi < oldCells.length) {
+    rowChanged = true
+    rowChildren.push(annotateNode(stripMeta(oldCells[oi]), '', 'delete'))
+    oi++
+  }
+  while (ni < newCells.length) {
+    rowChanged = true
+    rowChildren.push(annotateNode(stripMeta(newCells[ni]), '', 'insert'))
+    ni++
+  }
+
+  return { node: { ...stripMeta(newRow), children: rowChildren }, changed: rowChanged }
+}
+
+/**
+ * 基于列映射关系合并表格的 align 属性。
+ *
+ * 确保合并后的 align 数组与合并后的列顺序一致：
+ * 匹配列用新列对齐、删除列用旧列对齐、新增列用新列对齐。
+ *
+ * @param oldAlign - 旧表格的 align 数组。
+ * @param newAlign - 新表格的 align 数组。
+ * @param columnMapping - 列映射关系。
+ * @returns 合并后的 align 数组。
+ */
+function computeMergedAlign(
+  oldAlign: unknown[],
+  newAlign: unknown[],
+  columnMapping: ColumnMapping
+): unknown[] {
+  const { newToOld, oldToNew } = columnMapping
+  const result: unknown[] = []
+  let oi = 0
+  let ni = 0
+
+  while (oi < oldAlign.length || ni < newAlign.length) {
+    if (oi < oldAlign.length && ni < newAlign.length && newToOld[ni] === oi) {
+      result.push(newAlign[ni] ?? null)
+      oi++
+      ni++
+    } else if (oi < oldAlign.length && oldToNew[oi] === -1) {
+      result.push(oldAlign[oi] ?? null)
+      oi++
+    } else if (ni < newAlign.length && newToOld[ni] === -1) {
+      result.push(newAlign[ni] ?? null)
+      ni++
+    } else {
+      break
+    }
+  }
+
+  // 回退：剩余按位置补充
+  while (oi < oldAlign.length && ni < newAlign.length) {
+    result.push(newAlign[ni] ?? null)
+    oi++
+    ni++
+  }
+  while (oi < oldAlign.length) {
+    result.push(oldAlign[oi] ?? null)
+    oi++
+  }
+  while (ni < newAlign.length) {
+    result.push(newAlign[ni] ?? null)
+    ni++
+  }
+
+  return result
 }
 
 /**
@@ -887,7 +1130,7 @@ function nodeKey(node: any): string {
       parts.push(node.lang || '', node.meta || '')
       break
     case 'table':
-      parts.push(String(node.align?.length || 0))
+      // 不将列数纳入 key，以允许不同列数的表格在 LCS 中匹配
       break
     case 'list':
       parts.push(`o${node.ordered ? 1 : 0}`)
@@ -1077,8 +1320,7 @@ function canNodesMatch(
       if (String(oldNode.alt ?? '') !== String(newNode.alt ?? '')) return false
       break
     case 'table':
-      if ((oldNode.align as unknown[])?.length !== (newNode.align as unknown[])?.length)
-        return false
+      // 允许不同列数的表格匹配，以支持列级 diff（新增列/删除列）
       break
     case 'list':
       if (oldNode.ordered !== newNode.ordered) return false

@@ -175,6 +175,121 @@ const _scenarios: DiffScenario[] = [
     oldMarkdown: `| Name  | Score |\n|-------|-------|\n| Alice | 85    |`,
     newMarkdown: `| Name  | Grade |\n|-------|-------|\n| Alice | A     |`,
   },
+  {
+    name: '表格：新增列',
+    oldMarkdown: `| Name  | Score |\n|-------|-------|\n| Alice | 85    |\n| Bob   | 92    |`,
+    newMarkdown: `| Name  | Score | Grade |\n|-------|-------|-------|\n| Alice | 85    | B+    |\n| Bob   | 92    | A     |`,
+  },
+  {
+    name: '表格：删除列',
+    oldMarkdown: `| Name  | Score | Grade |\n|-------|-------|-------|\n| Alice | 85    | B+    |\n| Bob   | 92    | A     |`,
+    newMarkdown: `| Name  | Score |\n|-------|-------|\n| Alice | 85    |\n| Bob   | 92    |`,
+  },
+  {
+    name: '表格：新增列+删除行',
+    oldMarkdown: `| Name  | Score |\n|-------|-------|\n| Alice | 85    |\n| Bob   | 92    |\n| Carol | 78    |`,
+    newMarkdown: `| Name  | Score | Grade |\n|-------|-------|-------|\n| Alice | 85    | B+    |\n| Bob   | 92    | A     |`,
+  },
+  {
+    name: '表格：删除列+新增行',
+    oldMarkdown: `| Name  | Score | Grade |\n|-------|-------|-------|\n| Alice | 85    | B+    |\n| Bob   | 92    | A     |`,
+    newMarkdown: `| Name  | Score |\n|-------|-------|\n| Alice | 85    |\n| Bob   | 92    |\n| Carol | 78    |`,
+  },
+  {
+    name: '表格：整表新增',
+    oldMarkdown: `Below is the summary.\n\nEnd of report.`,
+    newMarkdown: `Below is the summary.\n\n| Region | Revenue |\n|--------|---------|\n| North  | $1.2M   |\n| South  | $0.8M   |\n\nEnd of report.`,
+  },
+  {
+    name: '表格：整表删除',
+    oldMarkdown: `Below is the summary.\n\n| Region | Revenue |\n|--------|---------|\n| North  | $1.2M   |\n| South  | $0.8M   |\n\nEnd of report.`,
+    newMarkdown: `Below is the summary.\n\nEnd of report.`,
+  },
+  {
+    name: '表格：多行同时修改',
+    oldMarkdown: `| Item   | Price |\n|--------|-------|\n| Apple  | $1.00 |\n| Banana | $0.50 |\n| Cherry | $3.00 |`,
+    newMarkdown: `| Item   | Price |\n|--------|-------|\n| Apple  | $1.20 |\n| Banana | $0.60 |\n| Cherry | $3.50 |`,
+  },
+  {
+    name: '表格：表头+数据同时变',
+    oldMarkdown: `| Name  | Score |\n|-------|-------|\n| Alice | 85    |\n| Bob   | 92    |`,
+    newMarkdown: `| Player | Points |\n|--------|--------|\n| Alice  | 95     |\n| Bob    | 88     |`,
+  },
+  {
+    name: '表格：中间删除行+新增列',
+    oldMarkdown: `| Name  | Score |\n|-------|-------|\n| Alice | 85    |\n| Bob   | 92    |\n| Carol | 78    |\n| Dave  | 88    |`,
+    newMarkdown: `| Name  | Score | Grade |\n|-------|-------|-------|\n| Alice | 85    | B+    |\n| Carol | 78    | C     |\n| Dave  | 88    | B     |`,
+  },
+  {
+    name: '表格：中间新增行+删除列',
+    oldMarkdown: `| Name  | Score | Grade |\n|-------|-------|-------|\n| Alice | 85    | B+    |\n| Bob   | 92    | A     |\n| Dave  | 88    | B     |`,
+    newMarkdown: `| Name  | Score |\n|-------|-------|\n| Alice | 85    |\n| Bob   | 92    |\n| Carol | 78    |\n| Dave  | 88    |`,
+  },
+  {
+    name: '表格：中间删除行',
+    oldMarkdown: `| Name  | Score |\n|-------|-------|\n| Alice | 85    |\n| Bob   | 92    |\n| Carol | 78    |\n| Dave  | 88    |`,
+    newMarkdown: `| Name  | Score |\n|-------|-------|\n| Alice | 85    |\n| Carol | 78    |\n| Dave  | 88    |`,
+  },
+  {
+    name: '表格：中间新增行',
+    oldMarkdown: `| Name  | Score |\n|-------|-------|\n| Alice | 85    |\n| Carol | 78    |\n| Dave  | 88    |`,
+    newMarkdown: `| Name  | Score |\n|-------|-------|\n| Alice | 85    |\n| Bob   | 92    |\n| Carol | 78    |\n| Dave  | 88    |`,
+  },
+  {
+    name: '表格：中间删除行+删除列',
+    oldMarkdown: `| Name  | Score | Grade |\n|-------|-------|-------|\n| Alice | 85    | B+    |\n| Bob   | 92    | A     |\n| Carol | 78    | C     |\n| Dave  | 88    | B     |`,
+    newMarkdown: `| Name  | Score |\n|-------|-------|\n| Alice | 85    |\n| Carol | 78    |\n| Dave  | 88    |`,
+  },
+  {
+    name: '表格：中间新增行+新增列',
+    oldMarkdown: `| Name  | Score |\n|-------|-------|\n| Alice | 85    |\n| Carol | 78    |\n| Dave  | 88    |`,
+    newMarkdown: `| Name  | Score | Grade |\n|-------|-------|-------|\n| Alice | 85    | B+    |\n| Bob   | 92    | A     |\n| Carol | 78    | C     |\n| Dave  | 88    | B     |`,
+  },
+  {
+    name: '表格：新增列+删除行+单元格修改',
+    oldMarkdown: `| Name  | Score |\n|-------|-------|\n| Alice | 85    |\n| Bob   | 92    |\n| Carol | 78    |\n| Dave  | 88    |`,
+    newMarkdown: `| Name  | Score | Grade |\n|-------|-------|-------|\n| Alice | 95    | A     |\n| Carol | 78    | C     |\n| Dave  | 90    | B     |`,
+  },
+  {
+    name: '表格：删除列+新增行+单元格修改',
+    oldMarkdown: `| Name  | Score | Grade |\n|-------|-------|-------|\n| Alice | 85    | B+    |\n| Bob   | 92    | A     |\n| Carol | 78    | C     |`,
+    newMarkdown: `| Name  | Score |\n|-------|-------|\n| Alice | 95    |\n| Bob   | 92    |\n| Carol | 80    |\n| Dave  | 88    |`,
+  },
+  {
+    name: '表格：新增列+单元格修改',
+    oldMarkdown: `| Name  | Score |\n|-------|-------|\n| Alice | 85    |\n| Bob   | 92    |\n| Carol | 78    |`,
+    newMarkdown: `| Name  | Score | Grade |\n|-------|-------|-------|\n| Alice | 95    | A     |\n| Bob   | 92    | B+    |\n| Carol | 78    | C     |`,
+  },
+  {
+    name: '表格：删除列+单元格修改',
+    oldMarkdown: `| Name  | Score | Grade |\n|-------|-------|-------|\n| Alice | 85    | B+    |\n| Bob   | 92    | A     |\n| Carol | 78    | C     |`,
+    newMarkdown: `| Name  | Score |\n|-------|-------|\n| Alice | 95    |\n| Bob   | 92    |\n| Carol | 80    |`,
+  },
+  {
+    name: '表格：中间删除行+新增列+单元格修改',
+    oldMarkdown: `| Name  | Score |\n|-------|-------|\n| Alice | 85    |\n| Bob   | 92    |\n| Carol | 78    |\n| Dave  | 88    |`,
+    newMarkdown: `| Name  | Score | Grade |\n|-------|-------|-------|\n| Alice | 90    | A     |\n| Carol | 80    | B     |\n| Dave  | 88    | B+    |`,
+  },
+  {
+    name: '表格：中间新增行+删除列+单元格修改',
+    oldMarkdown: `| Name  | Score | Grade |\n|-------|-------|-------|\n| Alice | 85    | B+    |\n| Bob   | 92    | A     |\n| Dave  | 88    | B     |`,
+    newMarkdown: `| Name  | Score |\n|-------|-------|\n| Alice | 90    |\n| Bob   | 92    |\n| Carol | 78    |\n| Dave  | 85    |`,
+  },
+  {
+    name: '表格：多单元格修改+表头修改',
+    oldMarkdown: `| Name  | Score |\n|-------|-------|\n| Alice | 85    |\n| Bob   | 92    |\n| Carol | 78    |`,
+    newMarkdown: `| Name  | Grade |\n|-------|-------|\n| Alice | A     |\n| Bob   | B+    |\n| Carol | C     |`,
+  },
+  {
+    name: '表格：删除中间列+新增中间行',
+    oldMarkdown: `| Name  | Dept  | Score |\n|-------|-------|-------|\n| Alice | Eng   | 85    |\n| Bob   | Sales | 92    |\n| Carol | HR    | 78    |\n| Dave  | IT    | 88    |`,
+    newMarkdown: `| Name  | Score |\n|-------|-------|\n| Alice | 85    |\n| Bob   | 92    |\n| Carol | 78    |\n| Eric  | 95    |\n| Dave  | 88    |`,
+  },
+  {
+    name: '表格：新增中间列',
+    oldMarkdown: `| Name  | Score |\n|-------|-------|\n| Alice | 85    |\n| Bob   | 92    |\n| Carol | 78    |\n| Dave  | 88    |`,
+    newMarkdown: `| Name  | Dept  | Score |\n|-------|-------|-------|\n| Alice | Eng   | 85    |\n| Bob   | Sales | 92    |\n| Carol | HR    | 78    |\n| Dave  | IT    | 88    |`,
+  },
 
   // ==================== 列表 ====================
   {

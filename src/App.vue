@@ -75,7 +75,7 @@ const mergedMdast = computed(() => buildMergedMdast(oldAst.value, newAst.value).
             <span class="label">Rendered Diff Result</span>
           </div>
           <!-- MarkdownDiff 组件：核心差异对比展示，支持行内文本级差异高亮 -->
-          <MarkdownDiff :old-markdown="oldMarkdown" v-model:new-markdown="newMarkdown" @update:old-markdown="oldMarkdown = $event" />
+          <MarkdownDiff v-model:old-markdown="oldMarkdown" v-model:new-markdown="newMarkdown" />
         </div>
       </div>
 
