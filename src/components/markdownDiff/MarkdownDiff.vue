@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
-import { parseMarkdown, buildMergedMdast, renderMdastToHtml, applyHunkResolution, applyHunkAcceptOnOldAst, mdastToMarkdown } from '../utils/markdownDiff'
-import type { DiffHunk } from '../utils/markdownDiff'
+import { parseMarkdown, buildMergedMdast, renderMdastToHtml, applyHunkResolution, applyHunkAcceptOnOldAst, mdastToMarkdown } from './markdownDiff'
+import type { DiffHunk } from './markdownDiff'
 
 /**
  * MarkdownDiff 组件属性。
@@ -62,7 +62,7 @@ const html = computed(() => renderMdastToHtml(merged.value.mdast as Parameters<t
  * 处理 diff 面板中的点击事件。
  *
  * 只响应带有 `data-action` 的按钮点击，避免干扰正文中的普通交互。
- * 当用户点击“接受/拒绝”时，会根据对应 hunk 生成新的 Markdown 并回传给父组件。
+ * 当用户点击"接受/拒绝"时，会根据对应 hunk 生成新的 Markdown 并回传给父组件。
  *
  * @param e - 鼠标点击事件。
  */

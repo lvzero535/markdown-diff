@@ -234,7 +234,7 @@ export function renderMdastToHtml(mdast: Root): string {
  * - `accept`：接受当前变更
  * - `reject`：拒绝当前变更
  *
- * 该函数用于支持 diff 面板中的“接受/拒绝”交互按钮。
+ * 该函数用于支持 diff 面板中的"接受/拒绝"交互按钮。
  *
  * @param newAst - 当前的新版本 AST。
  * @param hunk - 需要处理的差异块。
@@ -662,7 +662,7 @@ function annotateNode(node: MdastNode, diffId: string, diffType: AnnotatedDiffTy
   }
 }
 /**
- * 将文本编码为“单词 token 序列”，让 diff-match-patch 以词为单位比较。
+ * 将文本编码为"单词 token 序列"，让 diff-match-patch 以词为单位比较。
  *
  * @param oldText - 原始文本。
  * @param newText - 新文本。
@@ -1337,15 +1337,6 @@ function canNodesMatch(
 }
 
 /**
- * 使用 LCS + 回溯生成序列 diff 结果。
- *
- * @param oldAst - 旧序列。
- * @param newAst - 新序列。
- * @param config - diff 配置（可选，不传则使用 key 严格匹配）。
- * @param autoMatchCodeLangs - 1:1 code lang 集合（可选）。
- * @returns diff 结果数组。
- */
-/**
  * 计算两个可匹配节点的匹配权重（基于文本相似度）。
  *
  * 权重越高表示匹配质量越好，LCS 会优先选择高权重的匹配路径，
@@ -1498,9 +1489,6 @@ type DiffNode<T> = T & { __data: { diffType: DiffType; node?: { oldNode: T; newN
 
 /**
  * 创建用于接受/拒绝操作的工具栏节点。
- */
-/**
- * 创建用于接受/拒绝操作的工具栏节点。
  *
  * @returns HAST 元素节点。
  */
@@ -1533,9 +1521,7 @@ function createToolbar(): Element {
     ],
   }
 }
-/**
- * 从 HAST 节点中读取 diff 元信息。
- */
+
 /**
  * 从 HAST 节点中读取 diff 元信息。
  *
@@ -1549,9 +1535,7 @@ function getDiffMeta(node: HastNode): { diffId: string; diffType: string } {
     diffType: String(node.data?.diffType ?? props?.dataDiffType ?? ''),
   }
 }
-/**
- * 将需要交互的 diff 节点包裹成可显示工具栏的容器。
- */
+
 /**
  * 将带有 diff 元信息的节点包裹成可交互的 diff 块。
  *

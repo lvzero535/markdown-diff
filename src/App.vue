@@ -1,9 +1,9 @@
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue'
-import MarkdownDiff from './components/MarkdownDiff.vue'
+import MarkdownDiff from './components/markdownDiff/MarkdownDiff.vue'
 import JsonViewer from 'vue-json-viewer'
 import { scenarios } from './data/mockData'
-import { parseMarkdown, buildMergedMdast } from './utils/markdownDiff'
+import { parseMarkdown, buildMergedMdast } from './components/markdownDiff'
 
 const selectedScenarioIndex = ref(scenarios.length - 1)
 const oldMarkdown = ref(scenarios[selectedScenarioIndex.value].oldMarkdown)
