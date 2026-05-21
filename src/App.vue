@@ -1,9 +1,9 @@
 <script setup lang="ts">
-import { ref, computed, watch } from 'vue'
+import { ref, computed, watch, provide } from 'vue'
 import MarkdownDiff from './components/markdownDiff/MarkdownDiff.vue'
 import JsonViewer from 'vue-json-viewer'
 import { scenarios } from './data/mockData'
-import { parseMarkdown, buildMergedMdast } from './components/markdownDiff'
+import { useMarkdownDiff, markdownDiffKey } from './components/markdownDiff'
 
 const selectedScenarioIndex = ref(scenarios.length - 1)
 const oldMarkdown = ref(scenarios[selectedScenarioIndex.value].oldMarkdown)
@@ -14,9 +14,14 @@ watch(selectedScenarioIndex, (idx) => {
   newMarkdown.value = scenarios[idx].newMarkdown
 })
 
-const oldAst = computed(() => parseMarkdown(oldMarkdown.value))
-const newAst = computed(() => parseMarkdown(newMarkdown.value))
-const mergedMdast = computed(() => buildMergedMdast(oldAst.value, newAst.value).mdast)
+/** 与 MarkdownDiff 共享 AST / merged 计算，避免重复 parse（任务 #6） */
+const diffApi = useMarkdownDiff(
+  () => oldMarkdown.value,
+  () => newMarkdown.value
+)
+provide(markdownDiffKey, diffApi)
+const { oldAst, newAst, merged } = diffApi
+const mergedMdast = computed(() => merged.value.mdast)
 </script>
 
 <template>

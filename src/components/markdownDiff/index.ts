@@ -26,12 +26,16 @@ export { default as MarkdownDiff } from './MarkdownDiff.vue'
 
 // ==================== Composable ====================
 export { useMarkdownDiff } from './useMarkdownDiff'
+export { markdownDiffKey } from './inject'
 
 // ==================== 工具函数 ====================
 export {
   parseMarkdown,
   buildMergedMdast,
   renderMdastToHtml,
+  applyHunk,
+  resolveHunk,
+  resolveHunkOnAsts,
   applyHunkResolution,
   applyHunkAcceptOnOldAst,
   mdastToMarkdown,
@@ -39,14 +43,29 @@ export {
   extractFormattedText,
 } from './markdownDiff'
 
+export {
+  normalizeHunkResolveConfig,
+  expandHunkResolveTarget,
+  applyHunkToBothSides,
+} from './hunkPath'
+
+export type { HunkResolvedPayload } from './useMarkdownDiff'
+
 // ==================== 类型定义 ====================
 export type {
   DiffHunk,
   MergedResult,
   DiffConfig,
   MdastNode,
-  DiffMode,
-} from './markdownDiff'
+  MergedMdastRoot,
+  HunkBuildContext,
+  HunkResolveConfig,
+  HunkResolveTarget,
+} from './types'
+
+export { DEFAULT_HUNK_RESOLVE, HUNK_RESOLVE_PRESETS } from './types'
+
+export type { DiffMode } from './markdownDiff'
 
 // ==================== Vue 插件 ====================
 import type { App, Plugin } from 'vue'

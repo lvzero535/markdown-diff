@@ -1,20 +1,107 @@
-# Vue 3 + TypeScript + Vite
+# Markdown Diff
 
-This template should help get you started developing with Vue 3 and TypeScript in Vite. The template uses Vue 3 `<script setup>` SFCs, check out the [script setup docs](https://v3.vuejs.org/api/sfc-script-setup.html#sfc-script-setup) to learn more.
+基于 Vue 3 + mdast 的 Markdown 双栏差异对比组件，支持块级 LCS 对齐、行内/字符级 diff、表格列映射，以及接受/拒绝单个变更块。
 
-Learn more about the recommended Project Setup and IDE Support in the [Vue Docs TypeScript Guide](https://vuejs.org/guide/typescript/overview.html#project-setup).
+## 功能概览
 
+- 将 **old** / **new** 两份 Markdown 解析为 AST，合并为带标注的 merged AST 并渲染为 HTML
+- 块级变更可 **接受**（更新旧稿）或 **拒绝**（回退新稿）
+- 表格列增删、列表项等 **子级 hunk** 支持独立操作（见 `docs/TODO.md` 里程碑 2）
+- 渲染管线集成 **rehype-sanitize**，降低不可信内容经 `v-html` 输出时的 XSS 风险
 
-有两个markdown文件，我想把它们都分别转成oldMdast，newMdast，拿oldMdast和newMdast做类似vue的diff算法对比（或者有其他更好的办法？）对比后合并这两个ast成一个新的mergedMdast，并给mergedMdast的节点做一些标记，如下：
-1. 如果oldMdast中存在newMdast中不存在的节点，则在mergedMdast中给oldMdast的节点添加一个删除标记
-2. 如果newMdast中存在oldMdast中不存在的节点，则在mergedMdast中给newMdast的节点添加一个新增标记
-3. 如果oldMdast和newMdast中都存在节点且位置相同，但是节点内容不同，则在mergedMdast中合并这两个节点，合并后的内容为oldMdast的节点内容+newMdast的节点内容，合并后的节点添加一个diff标记, 并把合并后的内容给打开标记，标记出合并后的节点内容哪些是新增的，哪些是删除的，哪些是不变的
-4. 如果oldMdast和newMdast中都存在节点且位置相同，但是节点内容相同，给oldMdast的节点添加一个不改变标记
-根据mergedMdast的节点标记，给mergedMdast的节点添加不同的样式，如下：
-1. 删除标记的节点添加一个删除样式
-2. 新增标记的节点添加一个新增样式
-3. diff标记的节点添加一个diff样式
-4. 不改变标记的节点添加一个不改变样式
-且在改变的节点中，可以hover有两个按钮，一个是接受按钮，一个是拒绝按钮
-点击接受按钮，接受当前节点的改变
-点击拒绝按钮，拒绝当前节点的改变
+## 接受 / 拒绝语义（可配置）
+
+通过 `diffConfig.hunkResolve` 指定**接受/拒绝时更新哪一侧**：
+
+| 字段 | 可选值 | 默认 |
+|------|--------|------|
+| `onAccept` | `'old'` \| `'new'` \| `'both'` | `'old'` |
+| `onReject` | `'new'` \| `'old'` \| `'both'` | `'new'` |
+
+**预设**（`HUNK_RESOLVE_PRESETS`）：
+
+| 预设 | onAccept | onReject | 说明 |
+|------|----------|----------|------|
+| `classic` | old | new | 默认：接受改旧稿，拒绝改新稿 |
+| `syncBoth` | both | both | 每次操作同时写回两侧，该 hunk 立即在两侧一致 |
+| `mirror` | new | old | 与默认相反 |
+
+```vue
+<MarkdownDiff
+  :diff-config="{
+    similarityThreshold: 0.35,
+    hunkResolve: HUNK_RESOLVE_PRESETS.syncBoth,
+  }"
+/>
+```
+
+```ts
+import { HUNK_RESOLVE_PRESETS, resolveHunk } from './components/markdownDiff'
+```
+
+## 使用组件
+
+```vue
+<script setup>
+import { ref } from 'vue'
+import { MarkdownDiff } from './components/markdownDiff'
+
+const oldMd = ref('# Hello')
+const newMd = ref('# Hi')
+</script>
+
+<template>
+  <MarkdownDiff
+    v-model:old-markdown="oldMd"
+    v-model:new-markdown="newMd"
+    :diff-config="{ similarityThreshold: 0.4 }"
+    @hunk-resolved="(p) => console.log(p)"
+  />
+</template>
+```
+
+## Composable
+
+```ts
+import { useMarkdownDiff } from './components/markdownDiff'
+
+const { html, hunks, merged, accept, reject } = useMarkdownDiff(
+  () => oldMarkdown.value,
+  () => newMarkdown.value,
+  { similarityThreshold: 0.35 }
+)
+```
+
+## 配置项 `DiffConfig`
+
+| 字段 | 默认 | 说明 |
+|------|------|------|
+| `similarityThreshold` | `0.35` | 块级 LCS 文本相似度阈值 |
+| `headerSimilarityThreshold` | `0.85` | 表头 fuzzy 匹配阈值 |
+| `maxSimilarityTextLength` | `2000` | 相似度计算最大字符数（性能） |
+| `hunkResolve.onAccept` | `'old'` | 接受时更新 old / new / both |
+| `hunkResolve.onReject` | `'new'` | 拒绝时更新 old / new / both |
+
+`heading` / `code` / `table` 等节点类型会使用更高的内置阈值，减少误匹配。
+
+## 安全说明
+
+- 渲染使用 `v-html`；已对 HAST 做 **rehype-sanitize**
+- 若 Markdown 来自不可信用户，请勿依赖 `allowDangerousHtml` 解析任意 HTML；必要时关闭 GFM 原始 HTML 或加强消毒 schema
+
+## 开发
+
+```bash
+npm install --legacy-peer-deps
+npm run dev
+npm run build
+npm run test
+```
+
+## 文档
+
+- [优化任务清单](docs/TODO.md)
+
+## 技术栈
+
+Vue 3 · TypeScript · Vite · unified / remark / rehype · mdast-util-to-markdown · diff / diff-match-patch

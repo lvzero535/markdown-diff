@@ -1,3 +1,7 @@
+/**
+ * Diff 演示场景：覆盖块级 LCS、行内/字符 diff、表格列映射、子级 hunk 等能力。
+ * 名称前会自动加序号（见文件末尾 map）。
+ */
 export type DiffScenario = {
   name: string
   oldMarkdown: string
@@ -171,9 +175,19 @@ const _scenarios: DiffScenario[] = [
     newMarkdown: `| Name  | Score |\n|-------|-------|\n| Alice | 85    |`,
   },
   {
-    name: '表格：表头修改',
+    name: '表格：表头列名+单元格内容同时变更',
     oldMarkdown: `| Name  | Score |\n|-------|-------|\n| Alice | 85    |`,
     newMarkdown: `| Name  | Grade |\n|-------|-------|\n| Alice | A     |`,
+  },
+  {
+    name: '表格：表头模糊重命名（Score→Points，数据仍为数字）',
+    oldMarkdown: `| Name  | Score |\n|-------|-------|\n| Alice | 85    |\n| Bob   | 92    |`,
+    newMarkdown: `| Name  | Points |\n|--------|--------|\n| Alice | 85     |\n| Bob   | 92     |`,
+  },
+  {
+    name: '表格：列顺序调整（重排，易触发回退配对）',
+    oldMarkdown: `| A | B | C |\n|---|---|---|\n| 1 | 2 | 3 |`,
+    newMarkdown: `| C | A | B |\n|---|---|---|\n| 3 | 1 | 2 |`,
   },
   {
     name: '表格：新增列',
@@ -298,7 +312,7 @@ const _scenarios: DiffScenario[] = [
     newMarkdown: `- Apple\n- Banana\n- Date\n- Cherry`,
   },
   {
-    name: '列表：无序列表删除项',
+    name: '列表：无序列表删除中间项（Banana）',
     oldMarkdown: `- Apple\n- Banana\n- Cherry\n- Date`,
     newMarkdown: `- Apple\n- Cherry\n- Date`,
   },
@@ -318,7 +332,22 @@ const _scenarios: DiffScenario[] = [
     newMarkdown: `1. Step one\n2. Step three`,
   },
   {
-    name: '列表：有序↔无序切换',
+    name: '列表：有序列表修改项文本',
+    oldMarkdown: `1. Install dependencies\n2. Run the dev server\n3. Open the browser`,
+    newMarkdown: `1. Install dependencies\n2. Run the production build\n3. Open the browser`,
+  },
+  {
+    name: '列表：GFM 任务列表（勾选状态变化）',
+    oldMarkdown: `- [ ] Write tests\n- [x] Implement feature\n- [ ] Deploy`,
+    newMarkdown: `- [x] Write tests\n- [x] Implement feature\n- [ ] Deploy to staging`,
+  },
+  {
+    name: '列表：GFM 任务列表（新增/删除项）',
+    oldMarkdown: `- [x] Done task\n- [ ] Pending task`,
+    newMarkdown: `- [x] Done task\n- [ ] Pending task\n- [ ] New task`,
+  },
+  {
+    name: '列表：无序↔有序切换（整块替换）',
     oldMarkdown: `- Apple\n- Banana\n- Cherry`,
     newMarkdown: `1. Apple\n2. Banana\n3. Cherry`,
   },
@@ -353,22 +382,22 @@ const _scenarios: DiffScenario[] = [
   // ==================== 图片 ====================
   {
     name: '图片：URL变化',
-    oldMarkdown: `![Logo](https://fastly.picsum.photos/id/755/200/200.jpg?hmac=fgsDUz8GLl3UPtHhHlMIabU9V8LhbOPCwYGzrrn6CyU)\n\nWelcome to our site.`,
-    newMarkdown: `![Logo](https://fastly.picsum.photos/id/248/300/200.jpg?hmac=MgP74ne6TDOEKvULUnvYUQoxaFF8mtIkmzlBu-rIBL8)\n\nWelcome to our site.`,
+    oldMarkdown: `![Logo](https://example.com/assets/logo-v1.png)\n\nWelcome to our site.`,
+    newMarkdown: `![Logo](https://example.com/assets/logo-v2.png)\n\nWelcome to our site.`,
   },
   {
     name: '图片：alt文本变化',
-    oldMarkdown: `![Old description](https://fastly.picsum.photos/id/248/300/200.jpg?hmac=MgP74ne6TDOEKvULUnvYUQoxaFF8mtIkmzlBu-rIBL8)\n\nText below.`,
-    newMarkdown: `![New description](https://fastly.picsum.photos/id/248/300/200.jpg?hmac=MgP74ne6TDOEKvULUnvYUQoxaFF8mtIkmzlBu-rIBL8)\n\nText below.`,
+    oldMarkdown: `![Old description](https://example.com/assets/diagram.png)\n\nText below.`,
+    newMarkdown: `![New description](https://example.com/assets/diagram.png)\n\nText below.`,
   },
   {
     name: '图片：新增',
     oldMarkdown: `Here is the architecture overview.`,
-    newMarkdown: `Here is the architecture overview.\n\n![Architecture](https://fastly.picsum.photos/id/248/300/200.jpg?hmac=MgP74ne6TDOEKvULUnvYUQoxaFF8mtIkmzlBu-rIBL8)`,
+    newMarkdown: `Here is the architecture overview.\n\n![Architecture](https://example.com/assets/architecture.png)`,
   },
   {
     name: '图片：删除',
-    oldMarkdown: `![Screenshot](https://fastly.picsum.photos/id/248/300/200.jpg?hmac=MgP74ne6TDOEKvULUnvYUQoxaFF8mtIkmzlBu-rIBL8)\n\nThe interface shown above.`,
+    oldMarkdown: `![Screenshot](https://example.com/assets/screenshot.png)\n\nThe interface shown above.`,
     newMarkdown: `The interface shown above.`,
   },
 
@@ -408,9 +437,36 @@ const _scenarios: DiffScenario[] = [
 
   // ==================== HTML 原始内容 ====================
   {
-    name: 'HTML：原始标签变化',
+    name: 'HTML：原始标签 class 变化（经 sanitize 后输出）',
     oldMarkdown: `<div class="old-class">Content here</div>\n\nRegular paragraph.`,
     newMarkdown: `<div class="new-class">Content here</div>\n\nRegular paragraph.`,
+  },
+  {
+    name: 'HTML：自动链接 URL 变化',
+    oldMarkdown: `Visit https://docs.example.com/v1 for details.`,
+    newMarkdown: `Visit https://docs.example.com/v2 for details.`,
+  },
+
+  // ==================== 块级结构 ====================
+  {
+    name: '块级：段落顺序对调',
+    oldMarkdown: `First paragraph.\n\nSecond paragraph.\n\nThird paragraph.`,
+    newMarkdown: `Second paragraph.\n\nFirst paragraph.\n\nThird paragraph.`,
+  },
+  {
+    name: '块级：中间插入新段落',
+    oldMarkdown: `Introduction.\n\nConclusion.`,
+    newMarkdown: `Introduction.\n\nBody with details.\n\nConclusion.`,
+  },
+  {
+    name: '块级：相似段落并存（LCS 相似度匹配）',
+    oldMarkdown: `The system processes user requests quickly.\n\nThe system handles admin requests quickly.\n\nUnrelated footer text.`,
+    newMarkdown: `The system processes user requests quickly.\n\nThe system handles admin requests efficiently.\n\nUnrelated footer text.`,
+  },
+  {
+    name: '块级：整块删除+整块新增相邻',
+    oldMarkdown: `Keep this.\n\n# Old Section\n\nRemove me.\n\nKeep end.`,
+    newMarkdown: `Keep this.\n\n## New Section\n\nFresh content.\n\nKeep end.`,
   },
 
   // ==================== 边界场景 ====================
@@ -435,9 +491,14 @@ const _scenarios: DiffScenario[] = [
     newMarkdown: `## New Article\n\nCompletely different topic here.\n\n| A | B |\n|---|---|\n| 1 | 2 |`,
   },
   {
-    name: '边界：仅空白变化',
-    oldMarkdown: `Hello   world.\n\nNext   paragraph.`,
-    newMarkdown: `Hello world.\n\nNext paragraph.`,
+    name: '边界：多余空行（块级结构差异）',
+    oldMarkdown: `Line one.\n\nLine two.`,
+    newMarkdown: `Line one.\n\n\nLine two.`,
+  },
+  {
+    name: '边界：行尾两空格硬换行（GFM）',
+    oldMarkdown: `Line one  \ncontinues.\n\nStable paragraph.`,
+    newMarkdown: `Line one\ncontinues.\n\nStable paragraph.`,
   },
 
   // ==================== 混合格式 ====================
@@ -462,14 +523,36 @@ const _scenarios: DiffScenario[] = [
     newMarkdown: `This is **really important** information.`,
   },
   {
+    name: '混合：段落内链接+加粗同时变更',
+    oldMarkdown: `See the [**old guide**](https://docs.example.com/v1) for setup.`,
+    newMarkdown: `See the [new **guide**](https://docs.example.com/v2) for setup.`,
+  },
+  {
+    name: '混合：表格单元格内含行内格式',
+    oldMarkdown: `| Feature | Status |\n|---------|--------|\n| Auth | **Done** |\n| API | WIP |`,
+    newMarkdown: `| Feature | Status |\n|---------|--------|\n| Auth | **Done** |\n| API | *Beta* |`,
+  },
+  {
     name: '混合：多种差异组合',
     oldMarkdown: `# Project Status\n\nThe **current** version is 1.0.\n\n- Feature A\n- Feature B\n\n\`\`\`javascript\nconst v = "1.0";\n\`\`\`\n\n> Note: this is stable.\n\n| Status | Date |\n|--------|------|\n| Active | 2024 |`,
     newMarkdown: `## Project Status\n\nThe **updated** version is 2.0.\n\nWe have made significant progress.\n\n- Feature A\n- Feature B\n- Feature C\n\n\`\`\`javascript\nconst v = "2.0";\n\`\`\`\n\n\`\`\`python\nv = "2.0"\n\`\`\`\n\n> Note: this is stable and production-ready.\n\n| Status | Date |\n|--------|------|\n| Active | 2025 |`,
   },
 
-  // ==================== 原始默认场景 ====================
+  // ==================== 交互向（子级 hunk / 接受拒绝） ====================
   {
-    name: '默认：Quarterly Sales Report',
+    name: '交互：表格仅新增一列（可点列级接受/拒绝）',
+    oldMarkdown: `| Name | Value |\n|------|-------|\n| Foo  | 10    |`,
+    newMarkdown: `| Name | Value | Note |\n|------|-------|------|\n| Foo  | 10    | ok   |`,
+  },
+  {
+    name: '交互：列表仅新增一项（可点 listItem 接受/拒绝）',
+    oldMarkdown: `- Alpha\n- Beta`,
+    newMarkdown: `- Alpha\n- Beta\n- Gamma`,
+  },
+
+  // ==================== 综合演示 ====================
+  {
+    name: '综合：Quarterly Sales Report（拼写+格式+表格+代码）',
     oldMarkdown: `# Quarterly Sales Repost
 
 Looking ahead, the Q4 forecast projects a **continued** upward trend for the business.
@@ -519,10 +602,14 @@ The marketing team should focus on sustaining growth in Asia and Europe.`,
   },
 ]
 
+/** 全部演示场景（名称已加 `01.` 序号前缀） */
 export const scenarios: DiffScenario[] = _scenarios.map((s, i) => ({
   ...s,
   name: `${String(i + 1).padStart(2, '0')}. ${s.name}`,
 }))
+
+/** 场景数量，便于测试与 UI 展示 */
+export const scenarioCount = scenarios.length
 
 export const oldMarkdown = scenarios[scenarios.length - 1].oldMarkdown
 export const newMarkdown = scenarios[scenarios.length - 1].newMarkdown

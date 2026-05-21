@@ -1,99 +1,101 @@
-import { computed, ref, watch } from 'vue'
+import { computed, shallowRef, watch } from 'vue'
 import {
   parseMarkdown,
   buildMergedMdast,
   renderMdastToHtml,
-  applyHunkResolution,
-  applyHunkAcceptOnOldAst,
+  resolveHunk,
   mdastToMarkdown,
 } from './markdownDiff'
-import type { DiffHunk, DiffConfig } from './markdownDiff'
+import type { DiffHunk, DiffConfig, MergedMdastRoot, HunkResolveConfig } from './types'
+import { normalizeHunkResolveConfig } from './hunkPath'
+
+/** hunk 处理完成后向父组件回传的事件载荷 */
+export type HunkResolvedPayload = {
+  hunk: DiffHunk
+  action: 'accept' | 'reject'
+  oldMarkdown?: string
+  newMarkdown?: string
+}
 
 /**
  * useMarkdownDiff composable
- *
- * 封装 Markdown Diff 的核心逻辑，供非组件场景或自定义组件使用。
- *
- * @example
- * ```vue
- * <script setup>
- * import { useMarkdownDiff } from 'markdown-diff'
- *
- * const oldMd = ref('# Hello\n\nWorld')
- * const newMd = ref('# Hi\n\nWorld')
- *
- * const { html, hunks, accept, reject } = useMarkdownDiff(oldMd, newMd)
- * </script>
- *
- * <template>
- *   <div v-html="html" @click="onContentClick" />
- * </template>
- * ```
- *
- * @param oldMarkdown - 旧版本 Markdown 文本（ref 或 getter）
- * @param newMarkdown - 新版本 Markdown 文本（ref 或 getter）
- * @param config - diff 配置（可选）
- * @returns 响应式的 diff 结果和操作方法
  */
 export function useMarkdownDiff(
   oldMarkdown: () => string,
   newMarkdown: () => string,
-  config?: Partial<DiffConfig>
+  config?: (() => Partial<DiffConfig> | undefined) | Partial<DiffConfig>
 ) {
-  const hunksRef = ref<Map<string, DiffHunk>>(new Map())
+  const resolveConfig = (): Partial<DiffConfig> | undefined => {
+    if (typeof config === 'function') return config()
+    return config
+  }
 
-  const merged = computed(() => {
-    const oldAst = parseMarkdown(oldMarkdown())
-    const newAst = parseMarkdown(newMarkdown())
-    return buildMergedMdast(oldAst, newAst, config)
-  })
+  const hunkResolve = (): HunkResolveConfig | undefined => resolveConfig()?.hunkResolve
+
+  const oldAst = computed(() => parseMarkdown(oldMarkdown()))
+  const newAst = computed(() => parseMarkdown(newMarkdown()))
+
+  const merged = computed(() =>
+    buildMergedMdast(oldAst.value, newAst.value, resolveConfig())
+  )
+
+  const html = shallowRef('')
+  let htmlDebounceTimer: ReturnType<typeof setTimeout> | undefined
 
   watch(
-    merged,
-    (m) => {
-      hunksRef.value = m.hunks
+    () => merged.value.mdast,
+    (mdast) => {
+      if (htmlDebounceTimer) clearTimeout(htmlDebounceTimer)
+      htmlDebounceTimer = setTimeout(() => {
+        html.value = renderMdastToHtml(mdast as MergedMdastRoot)
+      }, 120)
     },
     { immediate: true }
   )
 
-  const html = computed(() =>
-    renderMdastToHtml(merged.value.mdast as Parameters<typeof renderMdastToHtml>[0])
-  )
-
   /**
-   * 接受某个 diff hunk 的变更，更新 oldMarkdown。
-   *
-   * @param hunk - 要接受的差异块
-   * @returns 新的 oldMarkdown 文本
+   * 按 `diffConfig.hunkResolve` 解析 hunk，返回需要写回的 Markdown。
    */
-  function accept(hunk: DiffHunk): string {
-    const oldAst = parseMarkdown(oldMarkdown())
-    const patchedOld = applyHunkAcceptOnOldAst(oldAst, hunk)
-    return mdastToMarkdown(patchedOld)
+  function resolveAction(
+    hunk: DiffHunk,
+    action: 'accept' | 'reject'
+  ): HunkResolvedPayload {
+    const result = resolveHunk(
+      oldAst.value,
+      newAst.value,
+      hunk,
+      action,
+      hunkResolve()
+    )
+    return { hunk, action, ...result }
   }
 
-  /**
-   * 拒绝某个 diff hunk 的变更，更新 newMarkdown。
-   *
-   * @param hunk - 要拒绝的差异块
-   * @returns 新的 newMarkdown 文本
-   */
+  /** @deprecated 请使用 resolveAction；仅按当前策略返回 old 侧文本 */
+  function accept(hunk: DiffHunk): string {
+    const cfg = normalizeHunkResolveConfig(hunkResolve())
+    const result = resolveHunk(oldAst.value, newAst.value, hunk, 'accept', cfg)
+    return result.oldMarkdown ?? mdastToMarkdown(oldAst.value)
+  }
+
+  /** @deprecated 请使用 resolveAction；仅按当前策略返回 new 侧文本 */
   function reject(hunk: DiffHunk): string {
-    const newAst = parseMarkdown(newMarkdown())
-    const patched = applyHunkResolution(newAst, hunk, 'reject')
-    return mdastToMarkdown(patched)
+    const cfg = normalizeHunkResolveConfig(hunkResolve())
+    const result = resolveHunk(oldAst.value, newAst.value, hunk, 'reject', cfg)
+    return result.newMarkdown ?? mdastToMarkdown(newAst.value)
   }
 
   return {
-    /** 渲染后的 HTML 字符串（带 diff 标记） */
     html,
-    /** 当前所有 diff hunks 的映射 */
-    hunks: hunksRef,
-    /** 合并后的 AST 和 hunks */
+    hunks: computed(() => merged.value.hunks),
     merged,
-    /** 接受变更，返回新的 oldMarkdown */
+    oldAst,
+    newAst,
+    resolveAction,
     accept,
-    /** 拒绝变更，返回新的 newMarkdown */
     reject,
+    /** 当前生效的 hunk 解析策略（只读） */
+    hunkResolveConfig: computed(() => normalizeHunkResolveConfig(hunkResolve())),
   }
 }
+
+export type UseMarkdownDiffReturn = ReturnType<typeof useMarkdownDiff>

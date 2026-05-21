@@ -1,70 +1,57 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
-import { parseMarkdown, buildMergedMdast, renderMdastToHtml, applyHunkResolution, applyHunkAcceptOnOldAst, mdastToMarkdown } from './markdownDiff'
-import type { DiffHunk } from './markdownDiff'
+import { inject } from 'vue'
+import { useMarkdownDiff } from './useMarkdownDiff'
+import { markdownDiffKey } from './inject'
+import type { DiffConfig } from './types'
+import type { HunkResolvedPayload, UseMarkdownDiffReturn } from './useMarkdownDiff'
 
 /**
  * MarkdownDiff 组件属性。
  *
- * 该组件接收旧 Markdown 和新 Markdown，并渲染一个可交互的差异视图，
- * 用户可以在 diff 面板中直接接受或拒绝单个变更。
+ * 接受/拒绝更新哪一侧由 `diffConfig.hunkResolve` 配置（默认：接受→old，拒绝→new）。
+ * 预设见 `HUNK_RESOLVE_PRESETS`（如 `syncBoth` 同时更新两侧）。
  */
-const props = defineProps<{
-  /** 旧版本 Markdown 原文。 */
-  oldMarkdown: string
-  /** 新版本 Markdown 原文。 */
-  newMarkdown: string
-}>()
-
-/**
- * 组件事件定义。
- *
- * 当用户接受/拒绝某个 diff hunk 时，组件会向父组件回传更新后的 Markdown 文本，
- * 以便父组件同步刷新编辑器中的内容。
- */
-const emit = defineEmits<{
-  /** 更新旧 Markdown 内容。 */
-  'update:oldMarkdown': [value: string]
-  /** 更新新 Markdown 内容。 */
-  'update:newMarkdown': [value: string]
-}>()
-
-const hunksRef = ref<Map<string, DiffHunk>>(new Map())
-
-/**
- * 由旧/新 Markdown 计算得到的合并结果。
- *
- * 其中 `mdast` 用于最终渲染，`hunks` 用于按钮交互时定位差异块。
- */
-const merged = computed(() => {
-  const oldAst = parseMarkdown(props.oldMarkdown)
-  const newAst = parseMarkdown(props.newMarkdown)
-  return buildMergedMdast(oldAst, newAst)
-})
-
-/**
- * 同步最新的 hunks 索引，确保按钮点击时拿到的是当前 diff 状态。
- */
-watch(
-  merged,
-  (m) => {
-    hunksRef.value = m.hunks
-  },
-  { immediate: true }
+const props = withDefaults(
+  defineProps<{
+    oldMarkdown: string
+    newMarkdown: string
+    /** diff 算法配置，如 similarityThreshold（任务 #8） */
+    diffConfig?: Partial<DiffConfig>
+  }>(),
+  {}
 )
 
-/**
- * 将 merged AST 转换为 HTML 字符串，用于 `v-html` 渲染。
- */
-const html = computed(() => renderMdastToHtml(merged.value.mdast as Parameters<typeof renderMdastToHtml>[0]))
+const emit = defineEmits<{
+  'update:oldMarkdown': [value: string]
+  'update:newMarkdown': [value: string]
+  /** 单个 hunk 处理完成时触发，便于父组件做审计或双栏同步（任务 #4） */
+  'hunk-resolved': [payload: HunkResolvedPayload]
+}>()
 
 /**
- * 处理 diff 面板中的点击事件。
- *
- * 只响应带有 `data-action` 的按钮点击，避免干扰正文中的普通交互。
- * 当用户点击"接受/拒绝"时，会根据对应 hunk 生成新的 Markdown 并回传给父组件。
- *
- * @param e - 鼠标点击事件。
+ * 内部始终创建一份 diff 状态；若父级 provide 了共享实例则优先使用（任务 #6）。
+ * inject 的第二个参数为默认值，保证组合式 API 调用顺序稳定。
+ */
+const owned = useMarkdownDiff(
+  () => props.oldMarkdown,
+  () => props.newMarkdown,
+  () => props.diffConfig
+)
+const { html, hunks, resolveAction } = inject<UseMarkdownDiffReturn>(markdownDiffKey, owned)
+
+/** 根据 hunkResolve 配置写回 old/new 并触发事件 */
+function emitResolved(payload: HunkResolvedPayload) {
+  if (payload.oldMarkdown !== undefined) {
+    emit('update:oldMarkdown', payload.oldMarkdown)
+  }
+  if (payload.newMarkdown !== undefined) {
+    emit('update:newMarkdown', payload.newMarkdown)
+  }
+  emit('hunk-resolved', payload)
+}
+
+/**
+ * 处理 diff 面板中的点击：仅响应带 data-action 的按钮。
  */
 function onContentClick(e: MouseEvent) {
   const target = e.target as HTMLElement
@@ -79,52 +66,63 @@ function onContentClick(e: MouseEvent) {
   const action = btn.getAttribute('data-action') as 'accept' | 'reject' | null
   if (!id || !action) return
 
-  const hunk = hunksRef.value.get(id)
+  const hunk = hunks.value.get(id)
   if (!hunk) return
 
-  if (action === 'accept') {
-    // 接受变更：修改 oldMarkdown 使其与该 hunk 的新版本内容一致
-    const oldAst = parseMarkdown(props.oldMarkdown)
-    const patchedOld = applyHunkAcceptOnOldAst(oldAst, hunk)
-    emit('update:oldMarkdown', mdastToMarkdown(patchedOld))
-  } else {
-    // 拒绝变更：修改 newMarkdown 恢复该 hunk 的旧版本内容
-    const newAst = parseMarkdown(props.newMarkdown)
-    const patched = applyHunkResolution(newAst, hunk, action)
-    emit('update:newMarkdown', mdastToMarkdown(patched))
+  emitResolved(resolveAction(hunk, action))
+}
+
+/** 键盘快捷键：聚焦在 diff 容器内时 A 接受 / R 拒绝（任务 #14） */
+function onKeydown(e: KeyboardEvent) {
+  if (e.target !== e.currentTarget) return
+  const active = document.activeElement?.closest('[data-diff-id]') as HTMLElement | null
+  if (!active) return
+  const id = active.getAttribute('data-diff-id')
+  if (!id) return
+  const hunk = hunks.value.get(id)
+  if (!hunk) return
+  if (e.key === 'a' || e.key === 'A') {
+    e.preventDefault()
+    emitResolved(resolveAction(hunk, 'accept'))
+  } else if (e.key === 'r' || e.key === 'R') {
+    e.preventDefault()
+    emitResolved(resolveAction(hunk, 'reject'))
   }
 }
 </script>
 
 <template>
-  <!-- diff 容器：承载最终渲染后的 Markdown HTML -->
   <div class="markdown-diff-container">
-    <!-- 使用 v-html 输出带有 diff 标记的 HTML，并在容器上统一接管点击事件 -->
     <div
       class="markdown-diff-content"
+      tabindex="0"
       v-html="html"
       @click="onContentClick"
+      @keydown="onKeydown"
     />
   </div>
 </template>
 
 <style>
-/* highlight.js 代码高亮主题 */
 @import 'highlight.js/styles/github.css';
 
-/* 整体 diff 面板容器 */
 .markdown-diff-container {
   padding: 20px;
   background: #ffffff;
   border-radius: 8px;
 }
 
-/* Markdown 正文基础排版 */
 .markdown-diff-content {
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
   font-size: 16px;
   line-height: 1.6;
   color: #333;
+  outline: none;
+}
+
+.markdown-diff-content:focus-visible {
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.35);
+  border-radius: 4px;
 }
 
 .markdown-diff-content h1,
@@ -172,6 +170,7 @@ function onContentClick(e: MouseEvent) {
   text-align: left;
   vertical-align: middle;
   word-break: break-word;
+  position: relative;
 }
 
 .markdown-diff-content th:last-child,
@@ -206,13 +205,11 @@ function onContentClick(e: MouseEvent) {
   background: rgba(239, 68, 68, 0.06);
 }
 
-/* 列级 diff：新增列单元格绿色 */
 .markdown-diff-content td.diff-hunk--insert,
 .markdown-diff-content th.diff-hunk--insert {
   background: rgba(16, 185, 129, 0.18);
 }
 
-/* 列级 diff：删除列单元格红色 */
 .markdown-diff-content td.diff-hunk--delete,
 .markdown-diff-content th.diff-hunk--delete {
   background: rgba(239, 68, 68, 0.12);
@@ -313,12 +310,14 @@ function onContentClick(e: MouseEvent) {
   right: 8px;
   display: flex;
   gap: 6px;
-  opacity: 0;
+  opacity: 0.15;
   transition: opacity 0.15s ease;
   z-index: 1;
 }
 
-.diff-hunk:hover .diff-hunk-toolbar {
+.diff-hunk:hover .diff-hunk-toolbar,
+.diff-hunk:focus-within .diff-hunk-toolbar,
+.markdown-diff-content:focus-within .diff-hunk-toolbar {
   opacity: 1;
 }
 
