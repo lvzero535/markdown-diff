@@ -44,10 +44,7 @@ export type {
   MergedResult,
 } from './types'
 
-export {
-  DEFAULT_HUNK_RESOLVE,
-  HUNK_RESOLVE_PRESETS,
-} from './types'
+export { DEFAULT_HUNK_RESOLVE, HUNK_RESOLVE_PRESETS } from './types'
 import { DEFAULT_HUNK_RESOLVE } from './types'
 
 type DiffType = 'equal' | 'insert' | 'delete'
@@ -195,6 +192,7 @@ function getDiffModeForNode(oldNode: MdastNode, newNode: MdastNode): DiffMode {
 }
 
 /**
+ *
  * 合并旧/新 Markdown AST，生成可渲染的 merged AST 和可交互的 diff hunk 索引。
  *
  * 该结果用于主 diff 视图：
@@ -269,15 +267,65 @@ function annotateWithRegisteredHunk(
   return annotateNode(stripMeta(node), id, diffType)
 }
 
+/**
+ * 将块级 LCS 的 diff 序列转换为「带标注的 merged mdast 根」+「可交互 hunk 索引」。
+ *
+ * 上游 {@link mergeSubsequence} 已经把旧/新顶层 children 对齐为
+ * `insert` / `delete` / `equal` 三类节点；本函数遍历该序列，做四件事：
+ *
+ * 1. **追踪双侧路径**：用 `newAstIndex` / `oldAstIndex` 同步推进，分别记录
+ *    当前节点在「新文档 children」与「旧文档 children」中的下标。
+ *    - `insert` 只占新侧位置 → 仅 `newAstIndex++`
+ *    - `delete` 只占旧侧位置 → 仅 `oldAstIndex++`
+ *    - `equal`（无论是否内容修改）双侧都占一位 → 两个下标都自增
+ *    这套下标后续会变成 `DiffHunk.path` / `DiffHunk.oldPath`，是「接受/拒绝」
+ *    时在两侧 AST 中精确定位节点的关键（见 hunkPath.applyHunkToAst）。
+ *
+ * 2. **注册可交互 hunk**：每个变更（insert/delete/modified）调用
+ *    {@link registerHunk} 写入 `hunks: Map<id, DiffHunk>`，
+ *    其中 id 由 {@link createStableHunkId} 基于路径与节点结构生成，
+ *    保证 resolve 重算后同一逻辑位置 id 保持稳定。
+ *
+ * 3. **递归比较 equal 节点**：对结构匹配上的旧/新节点调用
+ *    {@link mergeEqualNodes} 深入子树（表格行、列表项、inline 等），
+ *    若内部仍有差异则整体标记为 `modified`（容器级）；否则标记为 `unchanged`。
+ *
+ * 4. **附加 diff 元数据**：用 {@link annotateNode} 在节点上写
+ *    `dataDiffId` / `dataDiffType`，下游 rehype 插件据此渲染红/绿样式与工具栏。
+ *
+ * @param diffResult - 顶层块级 LCS 的输出（`mergeSubsequence` 返回值）
+ * @param config - diff 配置（透传给 `mergeEqualNodes` 控制阈值等）
+ * @returns `mdast` 为可渲染的合并根节点；`hunks` 为「id → DiffHunk」索引，
+ *          供 `MarkdownDiff.vue` 点击「接受/拒绝」按钮时按 id 反查使用
+ *
+ * @example
+ * 输入 diff 序列（顶层）:
+ *   [ equal(P1,P1), insert(P2'), equal(P3,P3) ]
+ * 双侧下标推进:
+ *   ① equal → newPath=[0], oldPath=[0]，下标都到 1
+ *   ② insert → newPath=[1], oldPath=[1]，仅 newAstIndex→2
+ *   ③ equal → newPath=[2], oldPath=[1]，下标都到 3/2
+ */
 function buildMergedFromDiff(diffResult: DiffNode<MdastNode>[], config?: DiffConfig): MergedResult {
+  // 可交互 hunk 表：key=稳定 id，value=含双侧路径的 DiffHunk
   const hunks = new Map<string, DiffHunk>()
+  // 累积的 merged 根节点 children，最终作为返回值
   const children: MdastNode[] = []
+  // 双侧独立游标：insert/delete 只推进单侧；equal 两侧同步推进
   let newAstIndex = 0
   let oldAstIndex = 0
 
   diffResult.forEach((diffNode) => {
     const diffType = diffNode.__data.diffType
 
+    /**
+     * 情况 1：insert —— 新文档独有的块，旧侧不存在
+     *
+     * - `path` 用 newAstIndex：新侧实际位置
+     * - `oldPath` 用 oldAstIndex：旧侧「应插入到此处」的位置（接受时 splice 用）
+     * - 仅 `newNode` 字段填充，因旧侧无对应节点
+     * - 推进 newAstIndex；oldAstIndex 不变（旧 AST 没有这块）
+     */
     if (diffType === 'insert') {
       const clean = stripMeta(diffNode)
       const path = [newAstIndex]
@@ -293,6 +341,14 @@ function buildMergedFromDiff(diffResult: DiffNode<MdastNode>[], config?: DiffCon
       return
     }
 
+    /**
+     * 情况 2：delete —— 旧文档独有的块，新侧不存在
+     *
+     * 渲染上仍保留该节点（标红展示），所以也压入 children；
+     * 但 newAstIndex 不前进（新 AST 实际没有这块），仅 oldAstIndex++。
+     *
+     * 注意：`path = [newAstIndex]` 表示该 hunk 在「拒绝时新侧应恢复到」的下标位置。
+     */
     if (diffType === 'delete') {
       const clean = stripMeta(diffNode)
       const path = [newAstIndex]
@@ -308,9 +364,23 @@ function buildMergedFromDiff(diffResult: DiffNode<MdastNode>[], config?: DiffCon
       return
     }
 
+    /**
+     * 情况 3：equal —— 块级结构匹配上（同类型 + 相似度 ≥ 阈值）
+     *
+     * 「结构相同」≠「内容完全一致」，还需要递归比较子树：
+     * - 段落：内部可能有部分词被改（生成 <del>/<ins>）
+     * - 表格：行/列可能增删（行级 hunk）
+     * - 列表：列表项可能增删（项级 hunk）
+     *
+     * mergeEqualNodes 会通过 hunkCtx 把当前节点路径透传下去，
+     * 让子级 hunk 拿到完整的 newPath/oldPath（如 [2, 1, 0] 表示
+     * 第 3 个顶层节点 → 第 2 个子节点 → 第 1 个孙节点）。
+     */
     if (diffType === 'equal' && diffNode.__data.node) {
       const { oldNode, newNode } = diffNode.__data.node
+      // 代码块走字符级 diff，其它走词级 diff（影响内部 <del>/<ins> 粒度）
       const mode = getDiffModeForNode(oldNode, newNode)
+      // 子级 hunk 透传上下文：当前节点在双侧的路径
       const hunkCtx: HunkBuildContext = {
         hunks,
         newPath: [newAstIndex],
@@ -318,6 +388,8 @@ function buildMergedFromDiff(diffResult: DiffNode<MdastNode>[], config?: DiffCon
       }
       const { node, changed } = mergeEqualNodes(oldNode, newNode, mode, config, hunkCtx)
       if (changed) {
+        // 容器级 modified：注册一个「整块修改」hunk，便于一键接受/拒绝整块
+        // oldNode/newNode 都保留快照，accept→替换为 newNode，reject→替换为 oldNode
         const id = registerHunk(hunks, {
           diffType: 'modified',
           path: [newAstIndex],
@@ -327,8 +399,10 @@ function buildMergedFromDiff(diffResult: DiffNode<MdastNode>[], config?: DiffCon
         })
         children.push(annotateNode(node, id, 'modified'))
       } else {
+        // 完全未变：仍标 unchanged（空 id），rehype 跳过包裹，不出工具栏
         children.push(annotateNode(node, '', 'unchanged'))
       }
+      // equal 双侧都消耗一位
       newAstIndex++
       oldAstIndex++
     }
@@ -398,13 +472,12 @@ export function resolveHunk(
   action: 'accept' | 'reject',
   resolveConfig?: HunkResolveConfig
 ): { oldMarkdown?: string; newMarkdown?: string } {
-  const { oldAst: o, newAst: n, updateOld, updateNew } = resolveHunkOnAsts(
-    oldAst,
-    newAst,
-    hunk,
-    action,
-    resolveConfig
-  )
+  const {
+    oldAst: o,
+    newAst: n,
+    updateOld,
+    updateNew,
+  } = resolveHunkOnAsts(oldAst, newAst, hunk, action, resolveConfig)
   const out: { oldMarkdown?: string; newMarkdown?: string } = {}
   if (updateOld) out.oldMarkdown = mdastToMarkdown(o)
   if (updateNew) out.newMarkdown = mdastToMarkdown(n)
@@ -490,7 +563,15 @@ function generateInlineStructureDiff(
   oldChildren: MdastNode[],
   newChildren: MdastNode[]
 ): { children: MdastNode[]; changed: boolean } {
-  const INLINE_TYPES = new Set(['strong', 'emphasis', 'link', 'code', 'inlineCode', 'delete', 'image'])
+  const INLINE_TYPES = new Set([
+    'strong',
+    'emphasis',
+    'link',
+    'code',
+    'inlineCode',
+    'delete',
+    'image',
+  ])
   const result: MdastNode[] = []
   let changed = false
 
@@ -556,9 +637,8 @@ function generateInlineStructureDiff(
     let oldOffset = 0
 
     for (const newChild of newChildren) {
-      const newText = newChild.type === 'text'
-        ? String(newChild.value ?? '')
-        : extractTextFromNode(newChild)
+      const newText =
+        newChild.type === 'text' ? String(newChild.value ?? '') : extractTextFromNode(newChild)
 
       if (newChild.type === 'text') {
         // 公共纯文本 → 直接输出
@@ -636,7 +716,15 @@ function shouldFlattenToTextDiff(
   if (oldChildren.length === 0 || newChildren.length === 0) return false
 
   // 检查是否有 inline 元素（非纯 text）
-  const INLINE_TYPES = new Set(['strong', 'emphasis', 'link', 'code', 'inlineCode', 'delete', 'image'])
+  const INLINE_TYPES = new Set([
+    'strong',
+    'emphasis',
+    'link',
+    'code',
+    'inlineCode',
+    'delete',
+    'image',
+  ])
   const oldHasInline = oldChildren.some((c) => INLINE_TYPES.has(c.type))
   const newHasInline = newChildren.some((c) => INLINE_TYPES.has(c.type))
 
@@ -895,7 +983,9 @@ function mergeEqualNodes(
       return { node: children[0], changed: true }
     }
     const mergedValue = children
-      .map((c) => (c.type === 'text' ? String(c.value ?? '') : String((c as MdastNode).value ?? '')))
+      .map((c) =>
+        c.type === 'text' ? String(c.value ?? '') : String((c as MdastNode).value ?? '')
+      )
       .join('')
     return { node: { type: 'text', value: mergedValue }, changed: true }
   }
@@ -952,24 +1042,37 @@ function mergeEqualNodes(
             oldPath: [...hunkCtx.oldPath, i],
           }
         : undefined
+      // 同一列索引两侧都有 cell：递归合并单元格内容（段落、行内格式等），
+      // 不在行级用 LCS 重排 cell，保证第 i 列始终对应第 i 列。
       if (oldCell && newCell) {
         const sub = mergeEqualNodes(oldCell, newCell, mode, config, cellCtx)
         if (sub.changed) rowChanged = true
         rowChildren.push(sub.node)
-      } else if (newCell && cellCtx) {
+      }
+      // 仅新侧有 cell（新行比旧行多列，或列映射后该位置只有新增列）：
+      // 有 hunkCtx 时注册 insert hunk，供接受/拒绝按列粒度操作。
+      else if (newCell && cellCtx) {
         rowChanged = true
         rowChildren.push(
           annotateWithRegisteredHunk(cellCtx, newCell, 'insert', { newNode: newCell })
         )
-      } else if (oldCell && cellCtx) {
+      }
+      // 仅旧侧有 cell（旧行比新行多列，或该列在新表中被删除）：
+      // 有 hunkCtx 时注册 delete hunk，渲染为整格删除且可单独撤销。
+      else if (oldCell && cellCtx) {
         rowChanged = true
         rowChildren.push(
           annotateWithRegisteredHunk(cellCtx, oldCell, 'delete', { oldNode: oldCell })
         )
-      } else if (newCell) {
+      }
+      // 仅新侧有 cell 且无 hunk 上下文（未开启 hunk 注册）：
+      // 仍标注 insert，但不写入 hunks 表，无法接受/拒绝，仅用于 diff 展示。
+      else if (newCell) {
         rowChanged = true
         rowChildren.push(annotateNode(stripMeta(newCell), '', 'insert'))
-      } else if (oldCell) {
+      }
+      // 仅旧侧有 cell 且无 hunk 上下文：标注 delete，同样无交互 hunk id。
+      else if (oldCell) {
         rowChanged = true
         rowChildren.push(annotateNode(stripMeta(oldCell), '', 'delete'))
       }
@@ -986,7 +1089,11 @@ function mergeEqualNodes(
    */
   if (oldNode.type === 'table' && newNode.type === 'table') {
     const columnMapping = computeColumnMapping(oldChildren, newChildren, config)
-    const childDiff = mergeSubsequence(addKeyToNodes(oldChildren), addKeyToNodes(newChildren), config)
+    const childDiff = mergeSubsequence(
+      addKeyToNodes(oldChildren),
+      addKeyToNodes(newChildren),
+      config
+    )
     let changed = false
     const mergedChildren: MdastNode[] = []
 
@@ -1051,7 +1158,15 @@ function mergeEqualNodes(
    * 这些节点在 insert/delete 时应保留原始格式（如 <strong>、<em>），
    * 同时用 diff-delete/diff-insert 样式标识变更。
    */
-  const INLINE_DIFF_TYPES = new Set(['text', 'strong', 'emphasis', 'link', 'inlineCode', 'delete', 'image'])
+  const INLINE_DIFF_TYPES = new Set([
+    'text',
+    'strong',
+    'emphasis',
+    'link',
+    'inlineCode',
+    'delete',
+    'image',
+  ])
 
   /**
    * 对子节点执行递归合并：
@@ -1172,7 +1287,7 @@ function computeColumnMapping(
     if (rows.length === 0) return []
     const firstRow = rows[0]
     const cells = (firstRow.children as MdastNode[]) ?? []
-    return cells.map(cell => extractTextFromNode(cell).trim())
+    return cells.map((cell) => extractTextFromNode(cell).trim())
   }
 
   const oldHeaders = getHeaderTexts(oldRows)
@@ -1533,11 +1648,7 @@ export function extractFormattedText(node: MdastNode): string {
  * @param newText - 新文本。
  * @returns 相似度（0~1）。
  */
-function computeTextSimilarity(
-  oldText: string,
-  newText: string,
-  config?: DiffConfig
-): number {
+function computeTextSimilarity(oldText: string, newText: string, config?: DiffConfig): number {
   if (oldText.length === 0 && newText.length === 0) return 1.0
   if (oldText.length === 0 || newText.length === 0) return 0.0
 
@@ -1662,10 +1773,12 @@ function canNodesMatch(
   const newText = extractTextFromNode(newNode)
   if (oldText.length === 0 && newText.length === 0) return true
 
-  const effectiveThreshold =
-    TYPE_SIMILARITY_THRESHOLDS[oldNode.type] ?? threshold
+  const effectiveThreshold = TYPE_SIMILARITY_THRESHOLDS[oldNode.type] ?? threshold
 
-  return computeTextSimilarity(oldText, newText, { similarityThreshold: threshold }) >= effectiveThreshold
+  return (
+    computeTextSimilarity(oldText, newText, { similarityThreshold: threshold }) >=
+    effectiveThreshold
+  )
 }
 
 /**
@@ -1704,6 +1817,20 @@ function mergeSubsequence<T extends { key: string }>(
   return backtrackDiff(dpResult, oldAst, newAst, config, autoMatchCodeLangs)
 }
 /**
+ * 
+ * 
+
+        ""   a   c   e
+      -----------------
+""  |   0    0   0   0
+a   |   0    1   1   1
+b   |   0    1   1   1
+c   |   0    1   2   2
+d   |   0    1   2   2
+e   |   0    1   2   3
+
+
+
  * 构建加权 LCS 动态规划表。
  *
  * 与传统等权 LCS 不同，此处使用文本相似度作为匹配权重，
@@ -1962,8 +2089,12 @@ function rehypeDiffAnnotations() {
 
           // 提取语言信息并添加语言标签
           const codeClasses = (codeChild.properties as Record<string, unknown>)?.className
-          const classList = typeof codeClasses === 'string' ? codeClasses.split(/\s+/)
-            : Array.isArray(codeClasses) ? codeClasses as string[] : []
+          const classList =
+            typeof codeClasses === 'string'
+              ? codeClasses.split(/\s+/)
+              : Array.isArray(codeClasses)
+                ? (codeClasses as string[])
+                : []
           const langClass = classList.find((c: string) => c.startsWith('language-'))
           if (langClass) {
             const lang = langClass.replace('language-', '')
@@ -1984,12 +2115,20 @@ function rehypeDiffAnnotations() {
 
       // 不能外包 <motion.div> 的标签：加 class + 在单元格/li 内挂工具栏（任务 #1）
       if (DIRECT_ANNOTATE_TAGS.has(node.tagName)) {
-        const cls = diffType === 'insert' ? 'diff-hunk--insert'
-          : diffType === 'delete' ? 'diff-hunk--delete'
-          : 'diff-hunk--modified'
+        const cls =
+          diffType === 'insert'
+            ? 'diff-hunk--insert'
+            : diffType === 'delete'
+              ? 'diff-hunk--delete'
+              : 'diff-hunk--modified'
         if (!node.properties) node.properties = {}
         const existing = (node.properties as Record<string, unknown>).className
-        const classes = typeof existing === 'string' ? existing.split(/\s+/) : Array.isArray(existing) ? existing as string[] : []
+        const classes =
+          typeof existing === 'string'
+            ? existing.split(/\s+/)
+            : Array.isArray(existing)
+              ? (existing as string[])
+              : []
         if (!classes.includes(cls)) classes.push(cls)
         classes.push('diff-hunk')
         ;(node.properties as Record<string, unknown>).className = classes

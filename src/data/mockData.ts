@@ -518,6 +518,16 @@ const _scenarios: DiffScenario[] = [
     newMarkdown: `The highlight of the show was the finale.`,
   },
   {
+    name: '混合：inline结构退化（纯文本→多种 inline：link+code+bold）',
+    oldMarkdown: `Run the install command from the official docs to setup the project quickly.`,
+    newMarkdown: `Run the \`install\` command from the [official docs](https://example.com) to **setup** the project quickly.`,
+  },
+  {
+    name: '混合：inline结构退化（多种 inline→纯文本：link+bold+code 全部去除）',
+    oldMarkdown: `Visit [our website](https://example.com) for **detailed** \`documentation\` and tutorials.`,
+    newMarkdown: `Visit our website for detailed documentation and tutorials.`,
+  },
+  {
     name: '混合：嵌套格式 ***bold+italic***',
     oldMarkdown: `This is ***really important*** information.`,
     newMarkdown: `This is **really important** information.`,
