@@ -1,6 +1,5 @@
 import type { Root } from 'mdast'
-import type { DiffHunk, HunkResolveConfig, HunkResolveTarget, MdastNode } from './types'
-import { DEFAULT_HUNK_RESOLVE } from './types'
+import type { MdastNode } from './types'
 
 /**
  * 参与相似度 / LCS 计算的最大字符数。
@@ -10,7 +9,7 @@ export const MAX_SIMILARITY_TEXT_LENGTH = 2000
 
 /**
  * 为 hunk 生成稳定 ID：路径 + 类型 + 节点结构 key 的哈希。
- * resolve 后全文重算时，同一逻辑位置在结构未变时 id 保持一致（便于测试与状态追踪）。
+ * 初次 merge 时注册；working 模式下 resolve 后从 pending 移除，不再依赖 id 跨重算对齐。
  */
 export function createStableHunkId(
   path: number[],
@@ -21,19 +20,6 @@ export function createStableHunkId(
   const typePart = node?.type ?? 'unknown'
   const sig = node ? nodeStructureSignature(node) : ''
   return `${diffType}-${pathKey}-${hashString(`${typePart}|${sig}`)}`
-}
-
-/** 合并用户配置与默认值 */
-export function normalizeHunkResolveConfig(
-  partial?: HunkResolveConfig
-): Required<HunkResolveConfig> {
-  return { ...DEFAULT_HUNK_RESOLVE, ...partial }
-}
-
-/** 将 `both` 展开为要写入的文档侧 */
-export function expandHunkResolveTarget(target: HunkResolveTarget): ('old' | 'new')[] {
-  if (target === 'both') return ['old', 'new']
-  return [target]
 }
 
 /** 提取用于 ID 的节点结构签名（不含正文差异） */
@@ -57,6 +43,7 @@ function hashString(input: string): string {
 
 /**
  * 在 AST 中按路径定位：返回「直接持有目标节点的 children 数组」及下标。
+ * 供 merge 构建阶段使用；working 模式 resolve 请用 {@link locateHunkInMdast}。
  */
 export function locateInAst(
   root: Root,
@@ -88,131 +75,4 @@ export function locateInAst(
 /** 深拷贝 AST（JSON） */
 export function cloneAst<T>(node: T): T {
   return JSON.parse(JSON.stringify(node)) as T
-}
-
-/**
- * 在指定 AST 的某一侧应用 hunk。
- *
- * | action | old 侧 | new 侧 |
- * |--------|--------|--------|
- * | accept | 向新版本对齐 | 确认新版本（modified 写 newNode） |
- * | reject | 保持旧版本（modified 写 oldNode） | 回退到旧版本 |
- */
-export function applyHunkToAst(
-  ast: Root,
-  hunk: DiffHunk,
-  action: 'accept' | 'reject',
-  side: 'old' | 'new'
-): Root {
-  const result = cloneAst(ast)
-  const path = side === 'old' ? [...hunk.oldPath] : [...hunk.path]
-  const isAccept = action === 'accept'
-  const isReject = action === 'reject'
-
-  switch (hunk.diffType) {
-    case 'insert': {
-      if (side === 'old') {
-        if (isAccept && hunk.newNode) {
-          spliceAtPath(result, path, 'insert', cloneAst(hunk.newNode))
-        }
-      } else if (isReject) {
-        spliceAtPath(result, path, 'remove')
-      }
-      break
-    }
-    case 'delete': {
-      if (side === 'old') {
-        if (isAccept) {
-          spliceAtPath(result, path, 'remove')
-        }
-      } else if (isReject && hunk.oldNode) {
-        spliceAtPath(result, path, 'insert', cloneAst(hunk.oldNode))
-      }
-      break
-    }
-    case 'modified': {
-      const located = locateInAst(result, path)
-      if (!located) break
-      const { parentChildren, index } = located
-      if (isAccept && hunk.newNode) {
-        parentChildren[index] = cloneAst(hunk.newNode)
-      } else if (isReject && hunk.oldNode) {
-        parentChildren[index] = cloneAst(hunk.oldNode)
-      }
-      break
-    }
-    default:
-      break
-  }
-
-  return result
-}
-
-/**
- * 按配置在 old/new 两侧应用 accept 或 reject。
- */
-export function applyHunkToBothSides(
-  oldAst: Root,
-  newAst: Root,
-  hunk: DiffHunk,
-  action: 'accept' | 'reject',
-  resolveConfig?: HunkResolveConfig
-): { oldAst: Root; newAst: Root } {
-  const cfg = normalizeHunkResolveConfig(resolveConfig)
-  const target = action === 'accept' ? cfg.onAccept : cfg.onReject
-  const sides = expandHunkResolveTarget(target)
-
-  let nextOld = oldAst
-  let nextNew = newAst
-  for (const side of sides) {
-    if (side === 'old') {
-      nextOld = applyHunkToAst(nextOld, hunk, action, 'old')
-    } else {
-      nextNew = applyHunkToAst(nextNew, hunk, action, 'new')
-    }
-  }
-  return { oldAst: nextOld, newAst: nextNew }
-}
-
-type SpliceOp = 'insert' | 'remove'
-
-function spliceAtPath(
-  root: Root,
-  path: number[],
-  op: SpliceOp,
-  nodeToInsert?: MdastNode
-): void {
-  if (path.length === 0) return
-
-  const parentPath = path.slice(0, -1)
-  const lastIndex = path[path.length - 1]
-
-  let parentChildren: MdastNode[]
-  if (parentPath.length === 0) {
-    if (!root.children) root.children = []
-    parentChildren = root.children as MdastNode[]
-  } else {
-    const parentLoc = locateInAst(root, parentPath)
-    if (!parentLoc) return
-    const parentNode = parentLoc.parentChildren[parentLoc.index]
-    if (!parentNode.children) parentNode.children = []
-    parentChildren = parentNode.children as MdastNode[]
-  }
-
-  if (op === 'insert' && nodeToInsert) {
-    const idx = Math.min(Math.max(0, lastIndex), parentChildren.length)
-    parentChildren.splice(idx, 0, nodeToInsert)
-  } else if (op === 'remove') {
-    if (lastIndex >= 0 && lastIndex < parentChildren.length) {
-      parentChildren.splice(lastIndex, 1)
-    }
-  }
-}
-
-/** @deprecated 请使用 locateInAst */
-export function findNodeByPath(nodes: MdastNode[], path: number[]): number | null {
-  if (!path.length) return null
-  const fakeRoot = { type: 'root', children: nodes } as unknown as Root
-  const loc = locateInAst(fakeRoot, path)
-  return loc?.index ?? null
 }

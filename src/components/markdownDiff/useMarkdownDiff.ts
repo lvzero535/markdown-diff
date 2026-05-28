@@ -1,25 +1,28 @@
-import { computed, shallowRef, watch } from 'vue'
-import {
-  parseMarkdown,
-  buildMergedMdast,
-  renderMdastToHtml,
-  resolveHunk,
-  mdastToMarkdown,
-} from './markdownDiff'
-import type { DiffHunk, DiffConfig, MergedMdastRoot, HunkResolveConfig } from './types'
-import { normalizeHunkResolveConfig } from './hunkPath'
+/**
+ * Markdown diff 组合式 API（单稿 Working 模式）。
+ *
+ * 数据流：
+ * 1. 初次：oldMarkdown + newMarkdown → buildMergedMdast → workingMdast + pendingHunks → html
+ * 2. 用户 accept/reject：patch workingMdast → 从 pending 移除 → 重渲染 html → 更新 finalMarkdown
+ * 3. old/new 变更：整轮 resetFromSources（重新 diff），不保留上一轮 working 修改
+ *
+ * 不通过 props 回流 old/new，避免双稿竞态与全量重算。
+ */
 
-/** hunk 处理完成后向父组件回传的事件载荷 */
+import { computed, ref, shallowRef, watch } from 'vue'
+import { parseMarkdown, buildMergedMdast, renderMdastToHtml } from './markdownDiff'
+import { cloneAst } from './hunkPath'
+import { applyHunkToWorkingMdast, workingMdastToMarkdown } from './workingHunk'
+import type { DiffHunk, DiffConfig, MergedMdastRoot } from './types'
+
+/** 单个 hunk 处理完成后向父组件回传的事件载荷 */
 export type HunkResolvedPayload = {
   hunk: DiffHunk
   action: 'accept' | 'reject'
-  oldMarkdown?: string
-  newMarkdown?: string
+  /** 当前 working 树序列化后的定稿 Markdown */
+  finalMarkdown: string
 }
 
-/**
- * useMarkdownDiff composable
- */
 export function useMarkdownDiff(
   oldMarkdown: () => string,
   newMarkdown: () => string,
@@ -30,71 +33,76 @@ export function useMarkdownDiff(
     return config
   }
 
-  const hunkResolve = (): HunkResolveConfig | undefined => resolveConfig()?.hunkResolve
-
-  const oldAst = computed(() => parseMarkdown(oldMarkdown()))
-  const newAst = computed(() => parseMarkdown(newMarkdown()))
-
-  const merged = computed(() =>
-    buildMergedMdast(oldAst.value, newAst.value, resolveConfig())
-  )
-
+  /** 内存中唯一的可变展示/定稿树 */
+  const workingMdast = shallowRef<MergedMdastRoot | null>(null)
+  /** 尚未 accept/reject 的 hunk 索引 */
+  const pendingHunks = shallowRef<Map<string, DiffHunk>>(new Map())
   const html = shallowRef('')
+  const finalMarkdown = ref('')
+
   let htmlDebounceTimer: ReturnType<typeof setTimeout> | undefined
 
-  watch(
-    () => merged.value.mdast,
-    (mdast) => {
-      if (htmlDebounceTimer) clearTimeout(htmlDebounceTimer)
-      htmlDebounceTimer = setTimeout(() => {
-        html.value = renderMdastToHtml(mdast as MergedMdastRoot)
-      }, 120)
-    },
-    { immediate: true }
-  )
+  /**
+   * 根据当前 working 树刷新 v-html 与 finalMarkdown。
+   * Phase 1 全页重渲染；后续可改为按 data-diff-id 局部更新。
+   */
+  function syncView() {
+    const root = workingMdast.value
+    if (!root) {
+      html.value = ''
+      finalMarkdown.value = ''
+      return
+    }
+    finalMarkdown.value = workingMdastToMarkdown(root)
+    if (htmlDebounceTimer) clearTimeout(htmlDebounceTimer)
+    htmlDebounceTimer = setTimeout(() => {
+      html.value = renderMdastToHtml(root)
+    }, 120)
+  }
 
   /**
-   * 按 `diffConfig.hunkResolve` 解析 hunk，返回需要写回的 Markdown。
+   * old/new 变化时：重新 parse + merge，重置 working 与 pending。
    */
-  function resolveAction(
-    hunk: DiffHunk,
-    action: 'accept' | 'reject'
-  ): HunkResolvedPayload {
-    const result = resolveHunk(
-      oldAst.value,
-      newAst.value,
-      hunk,
-      action,
-      hunkResolve()
-    )
-    return { hunk, action, ...result }
+  function resetFromSources() {
+    const oldAst = parseMarkdown(oldMarkdown())
+    const newAst = parseMarkdown(newMarkdown())
+    const { mdast, hunks } = buildMergedMdast(oldAst, newAst, resolveConfig())
+    workingMdast.value = cloneAst(mdast) as MergedMdastRoot
+    pendingHunks.value = new Map(hunks)
+    syncView()
   }
 
-  /** @deprecated 请使用 resolveAction；仅按当前策略返回 old 侧文本 */
-  function accept(hunk: DiffHunk): string {
-    const cfg = normalizeHunkResolveConfig(hunkResolve())
-    const result = resolveHunk(oldAst.value, newAst.value, hunk, 'accept', cfg)
-    return result.oldMarkdown ?? mdastToMarkdown(oldAst.value)
+  watch([oldMarkdown, newMarkdown], resetFromSources, { immediate: true })
+
+  /**
+   * 在 working 树上处理单个 hunk，并同步视图与 finalMarkdown。
+   */
+  function resolveAction(hunk: DiffHunk, action: 'accept' | 'reject'): HunkResolvedPayload {
+    const root = workingMdast.value
+    if (!root) {
+      return { hunk, action, finalMarkdown: finalMarkdown.value }
+    }
+    applyHunkToWorkingMdast(root, hunk, action)
+    const nextPending = new Map(pendingHunks.value)
+    nextPending.delete(hunk.id)
+    pendingHunks.value = nextPending
+    syncView()
+    return { hunk, action, finalMarkdown: finalMarkdown.value }
   }
 
-  /** @deprecated 请使用 resolveAction；仅按当前策略返回 new 侧文本 */
-  function reject(hunk: DiffHunk): string {
-    const cfg = normalizeHunkResolveConfig(hunkResolve())
-    const result = resolveHunk(oldAst.value, newAst.value, hunk, 'reject', cfg)
-    return result.newMarkdown ?? mdastToMarkdown(newAst.value)
+  function getFinalMarkdown(): string {
+    return finalMarkdown.value
   }
 
   return {
     html,
-    hunks: computed(() => merged.value.hunks),
-    merged,
-    oldAst,
-    newAst,
+    finalMarkdown,
+    getFinalMarkdown,
+    hunks: computed(() => pendingHunks.value),
+    workingMdast,
+    pendingHunks,
     resolveAction,
-    accept,
-    reject,
-    /** 当前生效的 hunk 解析策略（只读） */
-    hunkResolveConfig: computed(() => normalizeHunkResolveConfig(hunkResolve())),
+    resetFromSources,
   }
 }
 

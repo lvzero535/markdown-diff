@@ -2,17 +2,8 @@
  * Markdown diff 核心逻辑单元测试（任务 #18）
  */
 import { describe, it, expect } from 'vitest'
-import {
-  parseMarkdown,
-  buildMergedMdast,
-  renderMdastToHtml,
-  applyHunk,
-  resolveHunk,
-  mdastToMarkdown,
-  diffText,
-} from './markdownDiff'
+import { parseMarkdown, buildMergedMdast, renderMdastToHtml, diffText } from './markdownDiff'
 import { scenarios } from '../../data/mockData'
-import { HUNK_RESOLVE_PRESETS } from './types'
 import { createStableHunkId, locateInAst } from './hunkPath'
 
 describe('createStableHunkId', () => {
@@ -31,58 +22,6 @@ describe('locateInAst', () => {
     expect(loc).not.toBeNull()
     expect(loc!.index).toBe(0)
     expect(loc!.parentChildren[0].type).toBe('heading')
-  })
-})
-
-describe('applyHunk', () => {
-  it('拒绝 insert 应从 new 文档移除对应块', () => {
-    const oldMd = '# A\n'
-    const newMd = '# A\n\nNew paragraph\n'
-    const oldAst = parseMarkdown(oldMd)
-    const newAst = parseMarkdown(newMd)
-    const { hunks } = buildMergedMdast(oldAst, newAst)
-    const insertHunk = [...hunks.values()].find((h) => h.diffType === 'insert')
-    expect(insertHunk).toBeDefined()
-    const patched = applyHunk(newAst, insertHunk!, 'reject')
-    expect(mdastToMarkdown(patched).trim()).toBe(oldMd.trim())
-  })
-
-  it('接受 insert 应向 old 文档插入对应块', () => {
-    const oldMd = '# A\n'
-    const newMd = '# A\n\nNew paragraph\n'
-    const oldAst = parseMarkdown(oldMd)
-    const newAst = parseMarkdown(newMd)
-    const { hunks } = buildMergedMdast(oldAst, newAst)
-    const insertHunk = [...hunks.values()].find((h) => h.diffType === 'insert')
-    const patched = applyHunk(oldAst, insertHunk!, 'accept')
-    expect(mdastToMarkdown(patched)).toContain('New paragraph')
-  })
-})
-
-describe('resolveHunk hunkResolve config', () => {
-  it('syncBoth 接受时应同时返回 old 与 new', () => {
-    const oldMd = '# A\n'
-    const newMd = '# A\n\nNew paragraph\n'
-    const oldAst = parseMarkdown(oldMd)
-    const newAst = parseMarkdown(newMd)
-    const { hunks } = buildMergedMdast(oldAst, newAst)
-    const insertHunk = [...hunks.values()].find((h) => h.diffType === 'insert')!
-    const result = resolveHunk(oldAst, newAst, insertHunk, 'accept', HUNK_RESOLVE_PRESETS.syncBoth)
-    expect(result.oldMarkdown).toBeDefined()
-    expect(result.newMarkdown).toBeDefined()
-    expect(result.oldMarkdown).toContain('New paragraph')
-  })
-
-  it('mirror 接受时应只更新 new', () => {
-    const oldMd = '# A\n'
-    const newMd = '# A\n\nNew paragraph\n'
-    const oldAst = parseMarkdown(oldMd)
-    const newAst = parseMarkdown(newMd)
-    const { hunks } = buildMergedMdast(oldAst, newAst)
-    const insertHunk = [...hunks.values()].find((h) => h.diffType === 'insert')!
-    const result = resolveHunk(oldAst, newAst, insertHunk, 'accept', HUNK_RESOLVE_PRESETS.mirror)
-    expect(result.oldMarkdown).toBeUndefined()
-    expect(result.newMarkdown).toBeDefined()
   })
 })
 

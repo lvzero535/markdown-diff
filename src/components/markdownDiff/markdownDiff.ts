@@ -15,19 +15,11 @@ import { gfmToMarkdown } from 'mdast-util-gfm'
 import { visit } from 'unist-util-visit'
 import type { Root } from 'mdast'
 import type { Root as HastRoot, Element, ElementContent } from 'hast'
-import {
-  applyHunkToAst,
-  applyHunkToBothSides,
-  createStableHunkId,
-  expandHunkResolveTarget,
-  MAX_SIMILARITY_TEXT_LENGTH,
-  normalizeHunkResolveConfig,
-} from './hunkPath'
+import { createStableHunkId, MAX_SIMILARITY_TEXT_LENGTH } from './hunkPath'
 import type {
   DiffConfig,
   DiffHunk,
   HunkBuildContext,
-  HunkResolveConfig,
   MdastNode,
   MergedMdastRoot,
   MergedResult,
@@ -37,15 +29,10 @@ export type {
   DiffConfig,
   DiffHunk,
   HunkBuildContext,
-  HunkResolveConfig,
-  HunkResolveTarget,
   MdastNode,
   MergedMdastRoot,
   MergedResult,
 } from './types'
-
-export { DEFAULT_HUNK_RESOLVE, HUNK_RESOLVE_PRESETS } from './types'
-import { DEFAULT_HUNK_RESOLVE } from './types'
 
 type DiffType = 'equal' | 'insert' | 'delete'
 type AnnotatedDiffType = 'insert' | 'delete' | 'modified' | 'unchanged'
@@ -279,7 +266,7 @@ function annotateWithRegisteredHunk(
  *    - `delete` 只占旧侧位置 → 仅 `oldAstIndex++`
  *    - `equal`（无论是否内容修改）双侧都占一位 → 两个下标都自增
  *    这套下标后续会变成 `DiffHunk.path` / `DiffHunk.oldPath`，是「接受/拒绝」
- *    时在两侧 AST 中精确定位节点的关键（见 hunkPath.applyHunkToAst）。
+ *    构建期记录；working 模式 resolve 时按 hunk.id 在展示树上定位。
  *
  * 2. **注册可交互 hunk**：每个变更（insert/delete/modified）调用
  *    {@link registerHunk} 写入 `hunks: Map<id, DiffHunk>`，
@@ -424,118 +411,6 @@ export function renderMdastToHtml(mdast: MergedMdastRoot | Root): string {
   const normalized = normalizeDiffNodes(mdast as unknown as MdastNode)
   const hast = rehypeProcessor.runSync(normalized as unknown as Root)
   return rehypeProcessor.stringify(hast)
-}
-
-export type HunkResolveResult = {
-  oldAst: Root
-  newAst: Root
-  /** 根据 hunkResolve 配置，是否应更新对应侧 Markdown */
-  updateOld: boolean
-  updateNew: boolean
-}
-
-/**
- * 按 {@link HunkResolveConfig} 在 old/new AST 上应用 accept 或 reject（任务 #4 可配置）。
- */
-export function resolveHunkOnAsts(
-  oldAst: Root,
-  newAst: Root,
-  hunk: DiffHunk,
-  action: 'accept' | 'reject',
-  resolveConfig?: HunkResolveConfig
-): HunkResolveResult {
-  const cfg = normalizeHunkResolveConfig(resolveConfig)
-  const target = action === 'accept' ? cfg.onAccept : cfg.onReject
-  const sides = expandHunkResolveTarget(target)
-  const { oldAst: nextOld, newAst: nextNew } = applyHunkToBothSides(
-    oldAst,
-    newAst,
-    hunk,
-    action,
-    cfg
-  )
-  return {
-    oldAst: nextOld,
-    newAst: nextNew,
-    updateOld: sides.includes('old'),
-    updateNew: sides.includes('new'),
-  }
-}
-
-/**
- * 解析 hunk 并返回应写回的 Markdown 文本（未选中的侧不返回字段）。
- */
-export function resolveHunk(
-  oldAst: Root,
-  newAst: Root,
-  hunk: DiffHunk,
-  action: 'accept' | 'reject',
-  resolveConfig?: HunkResolveConfig
-): { oldMarkdown?: string; newMarkdown?: string } {
-  const {
-    oldAst: o,
-    newAst: n,
-    updateOld,
-    updateNew,
-  } = resolveHunkOnAsts(oldAst, newAst, hunk, action, resolveConfig)
-  const out: { oldMarkdown?: string; newMarkdown?: string } = {}
-  if (updateOld) out.oldMarkdown = mdastToMarkdown(o)
-  if (updateNew) out.newMarkdown = mdastToMarkdown(n)
-  return out
-}
-
-/**
- * 在**单侧** AST 上应用 hunk（默认策略：accept→old，reject→new）。
- * 需要自定义更新目标时请用 {@link resolveHunk}。
- */
-export function applyHunk(
-  ast: Root,
-  hunk: DiffHunk,
-  action: 'accept' | 'reject',
-  side?: 'old' | 'new'
-): Root {
-  const resolvedSide =
-    side ?? (action === 'accept' ? DEFAULT_HUNK_RESOLVE.onAccept : DEFAULT_HUNK_RESOLVE.onReject)
-  if (resolvedSide === 'both') {
-    throw new Error('applyHunk 不支持 side=both，请使用 resolveHunk')
-  }
-  return applyHunkToAst(ast, hunk, action, resolvedSide)
-}
-
-/**
- * 在新文档 AST 上应用 hunk（仅 **reject** 有效）。
- *
- * @deprecated 请使用 {@link applyHunk}(ast, hunk, 'reject')
- */
-export function applyHunkResolution(
-  newAst: Root,
-  hunk: DiffHunk,
-  action: 'accept' | 'reject'
-): Root {
-  if (action === 'accept') {
-    // accept 应修改 old 侧；若误传 newAst，保持原样并避免错误写入
-    return cloneNode(newAst)
-  }
-  return applyHunk(newAst, hunk, 'reject')
-}
-
-/**
- * 在旧文档 AST 上接受 hunk（等价于 applyHunk(..., 'accept')）。
- *
- * @deprecated 请使用 {@link applyHunk}(ast, hunk, 'accept')
- */
-export function applyHunkAcceptOnOldAst(oldAst: Root, hunk: DiffHunk): Root {
-  return applyHunk(oldAst, hunk, 'accept')
-}
-
-/**
- * 深拷贝一个节点对象，避免后续修改污染原始 AST。
- *
- * @param node - 需要拷贝的任意节点。
- * @returns 拷贝后的新对象。
- */
-function cloneNode<T>(node: T): T {
-  return JSON.parse(JSON.stringify(node)) as T
 }
 
 /**
